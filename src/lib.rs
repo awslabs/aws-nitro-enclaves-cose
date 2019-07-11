@@ -302,7 +302,7 @@ impl COSESign1 {
         Ok(COSESign1(
             ByteBuf::from(protected_bytes),
             unprotected.clone(),
-            payload.to_vec().into(),
+            ByteBuf::from(payload.to_vec()),
             ByteBuf::from(signature_bytes),
         ))
     }
