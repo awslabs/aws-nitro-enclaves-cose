@@ -259,27 +259,27 @@ impl COSESign1 {
 
         // Create the SigStruct to sign
         let protected: HeaderMap = sig_alg.into();
-        let protected_bytes = map_to_empty_or_serialized(&protected)
-            .map_err(|err| COSEError::SerializationError(err))?;
+        let protected_bytes =
+            map_to_empty_or_serialized(&protected).map_err(COSEError::SerializationError)?;
 
         let sig_structure = SigStructure::new_sign1(&protected_bytes, payload)
-            .map_err(|err| COSEError::SerializationError(err))?;
+            .map_err(COSEError::SerializationError)?;
 
         let struct_digest = hash(
             digest,
             &sig_structure
                 .as_bytes()
-                .map_err(|err| COSEError::SerializationError(err))?,
+                .map_err(COSEError::SerializationError)?,
         )
-        .map_err(|err| COSEError::SignatureError(err))?;
+        .map_err(COSEError::SignatureError)?;
 
         // The spec defines the signature as:
         // Signature = I2OSP(R, n) | I2OSP(S, n), where n = ceiling(key_length / 8)
         // The Signer interface doesn't provide this, so this will use EcdsaSig interface instead
         // and concatenate R and S.
         // See https://tools.ietf.org/html/rfc8017#section-4.1 for details.
-        let signature = EcdsaSig::sign(struct_digest.as_ref(), &key)
-            .map_err(|err| COSEError::SignatureError(err))?;
+        let signature =
+            EcdsaSig::sign(struct_digest.as_ref(), &key).map_err(COSEError::SignatureError)?;
         let bytes_r = signature.r().to_vec();
         let bytes_s = signature.s().to_vec();
 
@@ -310,23 +310,23 @@ impl COSESign1 {
     /// Serializes the structure for transport / storage. `tagged` is currently unused, but it
     /// will be used to set the #6.18 tag on the object as allowed by the spec.
     pub fn as_bytes(&self, _tagged: bool) -> Result<Vec<u8>, COSEError> {
-        let bytes = serde_cbor::to_vec(&self).map_err(|err| COSEError::SerializationError(err))?;
+        let bytes = serde_cbor::to_vec(&self).map_err(COSEError::SerializationError)?;
         Ok(bytes)
     }
 
     /// This function deserializes the structure, but doesn't check the contents for correctness
     /// at all.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, COSEError> {
-        serde_cbor::from_slice(bytes).map_err(|err| COSEError::SerializationError(err))
+        serde_cbor::from_slice(bytes).map_err(COSEError::SerializationError)
     }
 
     /// This checks the signature included in the structure against the given public key and
     /// returns true if the signature matches the given key.
     pub fn verify_signature(&self, key: &EcKeyRef<Public>) -> Result<bool, COSEError> {
         // Don't support anonymous curves
-        let curve_name = key.group().curve_name().ok_or(COSEError::UnsupportedError(
-            "Anonymous curves are not supported".to_string(),
-        ))?;
+        let curve_name = key.group().curve_name().ok_or_else(|| {
+            COSEError::UnsupportedError("Anonymous curves are not supported".to_string())
+        })?;
 
         // TODO: Check signature algorithm contained in the COSE_Sign1 structure
         // In theory, the digest itself does not have to match the curve, however,
@@ -338,37 +338,34 @@ impl COSESign1 {
             &self.0, /* protected headers */
             &self.2, /* payload */
         )
-        .map_err(|err| COSEError::SerializationError(err))?;
+        .map_err(COSEError::SerializationError)?;
 
         let struct_digest = hash(
             digest,
             &sig_structure
                 .as_bytes()
-                .map_err(|err| COSEError::SerializationError(err))?,
+                .map_err(COSEError::SerializationError)?,
         )
-        .map_err(|err| COSEError::SignatureError(err))?;
+        .map_err(COSEError::SignatureError)?;
 
         // Recover the R and S factors from the signature contained in the object
         let (bytes_r, bytes_s) = self.3.split_at(key_length);
 
-        let r = BigNum::from_slice(&bytes_r).map_err(|err| COSEError::SignatureError(err))?;
-        let s = BigNum::from_slice(&bytes_s).map_err(|err| COSEError::SignatureError(err))?;
+        let r = BigNum::from_slice(&bytes_r).map_err(COSEError::SignatureError)?;
+        let s = BigNum::from_slice(&bytes_s).map_err(COSEError::SignatureError)?;
 
-        let sig = EcdsaSig::from_private_components(r, s)
-            .map_err(|err| COSEError::SignatureError(err))?;
+        let sig = EcdsaSig::from_private_components(r, s).map_err(COSEError::SignatureError)?;
         Ok(sig
             .verify(&struct_digest, &key)
-            .map_err(|err| COSEError::SignatureError(err))?)
+            .map_err(COSEError::SignatureError)?)
     }
 
     /// This gets the `payload` of the document. If `key` is provided, it only gets the payload
     /// if the signature is correctly verified, otherwise returns
     /// `Err(COSEError::UnverifiedSignature)`.
     pub fn get_payload(&self, key: Option<&EcKeyRef<Public>>) -> Result<Vec<u8>, COSEError> {
-        if key.is_some() {
-            if !self.verify_signature(key.unwrap())? {
-                return Err(COSEError::UnverifiedSignature);
-            }
+        if key.is_some() && !self.verify_signature(key.unwrap())? {
+            return Err(COSEError::UnverifiedSignature);
         }
         Ok(self.2.to_vec())
     }
