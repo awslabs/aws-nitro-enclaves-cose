@@ -8,6 +8,7 @@ edition = "2018"
 serde_cbor = "0.10"
 serde_repr = "0.1"
 serde_bytes = "0.11"
+serde_with = "1.3"
 openssl = "0.10"
 
 [dependencies.serde]

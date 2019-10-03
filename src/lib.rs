@@ -11,7 +11,29 @@ use serde_cbor::Value as CborValue;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::collections::BTreeMap;
 
-pub type HeaderMap = BTreeMap<CborValue, CborValue>;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HeaderMap(
+    #[serde(deserialize_with = "::serde_with::rust::maps_duplicate_key_is_error::deserialize")]
+    BTreeMap<CborValue, CborValue>,
+);
+
+impl HeaderMap {
+    pub fn new() -> Self {
+        HeaderMap(BTreeMap::new())
+    }
+
+    pub fn insert(&mut self, key: CborValue, value: CborValue) -> Option<CborValue> {
+        self.0.insert(key, value)
+    }
+
+    pub fn get(&self, key: &CborValue) -> Option<&CborValue> {
+        self.0.get(key)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// Values from https://tools.ietf.org/html/rfc8152#section-8.1
 #[derive(Debug, Copy, Clone, Serialize_repr, Deserialize_repr)]
@@ -317,7 +339,13 @@ impl COSESign1 {
     /// This function deserializes the structure, but doesn't check the contents for correctness
     /// at all.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, COSEError> {
-        serde_cbor::from_slice(bytes).map_err(COSEError::SerializationError)
+        let cosesign1: Self =
+            serde_cbor::from_slice(bytes).map_err(COSEError::SerializationError)?;
+
+        let protected = cosesign1.0.as_slice();
+        let _: HeaderMap =
+            serde_cbor::from_slice(protected).map_err(COSEError::SerializationError)?;
+        Ok(cosesign1)
     }
 
     /// This checks the signature included in the structure against the given public key and
@@ -403,6 +431,32 @@ mod tests {
             map_to_empty_or_serialized(&map).unwrap(),
             [0xa1, 0x01, 0x38, 0x23]
         );
+    }
+
+    #[test]
+    fn map_with_duplicates() {
+        // Check that HeaderMaps with duplicate entries emit error
+        // {1: 42, 2: 42}
+        let test = [0xa2, 0x01, 0x18, 0x2A, 0x02, 0x18, 0x2A];
+        let map: HeaderMap = serde_cbor::from_slice(&test).unwrap();
+        assert_eq!(
+            map.get(&CborValue::Integer(1)),
+            Some(&CborValue::Integer(42))
+        );
+        assert_eq!(
+            map.get(&CborValue::Integer(2)),
+            Some(&CborValue::Integer(42))
+        );
+
+        // {1: 42, 2: 42, 1: 43}
+        let test = [0xa3, 0x01, 0x18, 0x2A, 0x02, 0x18, 0x2A, 0x01, 0x18, 0x2B];
+        let map: Result<HeaderMap, _> = serde_cbor::from_slice(&test);
+        assert!(map.is_err());
+
+        // {1: 42, 2: 42, 2: 42}
+        let test = [0xa3, 0x01, 0x18, 0x2A, 0x02, 0x18, 0x2A, 0x02, 0x18, 0x2A];
+        let map: Result<HeaderMap, _> = serde_cbor::from_slice(&test);
+        assert!(map.is_err());
     }
 
     #[test]
