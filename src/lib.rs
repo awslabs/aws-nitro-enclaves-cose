@@ -33,6 +33,10 @@ impl HeaderMap {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub fn from_bytes(header_map: &[u8]) -> Result<Self, CborError> {
+        serde_cbor::from_slice(&header_map)
+    }
 }
 
 /// Values from https://tools.ietf.org/html/rfc8152#section-8.1
@@ -237,6 +241,7 @@ pub enum COSEError {
     UnimplementedError,
     UnsupportedError(String),
     UnverifiedSignature,
+    SpecificationError(String),
     SerializationError(CborError),
 }
 
@@ -356,11 +361,47 @@ impl COSESign1 {
             COSEError::UnsupportedError("Anonymous curves are not supported".to_string())
         })?;
 
-        // TODO: Check signature algorithm contained in the COSE_Sign1 structure
         // In theory, the digest itself does not have to match the curve, however,
         // this is the recommendation and the spec does not even provide a way to specify
         // another digest type, so, signatures will fail if this is done differently
-        let (_, digest, key_length) = COSESign1::curve_to_parameters(curve_name)?;
+        let (signature_alg, digest, key_length) = COSESign1::curve_to_parameters(curve_name)?;
+
+        // The spec reads as follows:
+        //    alg:  This parameter is used to indicate the algorithm used for the
+        //        security processing.  This parameter MUST be authenticated where
+        //        the ability to do so exists.  This support is provided by AEAD
+        //        algorithms or construction (COSE_Sign, COSE_Sign0, COSE_Mac, and
+        //        COSE_Mac0).  This authentication can be done either by placing the
+        //        header in the protected header bucket or as part of the externally
+        //        supplied data.  The value is taken from the "COSE Algorithms"
+        //        registry (see Section 16.4).
+        // TODO: Currently this only validates the case where the Signature Algorithm is included
+        // in the protected headers. To be compatible with other implementations this should be
+        // more flexible, as stated in the spec.
+        let protected: HeaderMap =
+            HeaderMap::from_bytes(&self.0).map_err(COSEError::SerializationError)?;
+
+        if let Some(protected_signature_alg_val) = protected.get(&CborValue::Integer(1)) {
+            let protected_signature_alg = match protected_signature_alg_val {
+                CborValue::Integer(val) => val,
+                _ => {
+                    return Err(COSEError::SpecificationError(
+                        "Protected Header contains invalid Signature Algorithm specification"
+                            .to_string(),
+                    ))
+                }
+            };
+            if protected_signature_alg != &(signature_alg as i8 as i128) {
+                // The key doesn't match the one specified in the HeaderMap, so this fails
+                // signature verification immediately.
+                return Ok(false);
+            }
+        } else {
+            return Err(COSEError::SpecificationError(
+                "Protected Header does not contain a valid Signature Algorithm specification"
+                    .to_string(),
+            ));
+        }
 
         let sig_structure = SigStructure::new_sign1(
             &self.0, /* protected headers */
@@ -767,5 +808,31 @@ mod tests {
         let map = HeaderMap::new();
         let result = COSESign1::new(TEXT, &map, &ec_private);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_with_wrong_key() {
+        let (ec_private, ec_public) = generate_ec512_test_key();
+        let (_, ec_public_other) = generate_ec512_test_key();
+        let mut map = HeaderMap::new();
+        map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+        let cose_doc1 = COSESign1::new(TEXT, &map, &ec_private).unwrap();
+
+        assert!(cose_doc1.verify_signature(&ec_public).unwrap());
+        assert!(!cose_doc1.verify_signature(&ec_public_other).unwrap());
+    }
+
+    #[test]
+    fn validate_with_wrong_key_type() {
+        let (ec_private, ec_public) = generate_ec512_test_key();
+        let (_, ec_public_other) = generate_ec384_test_key();
+        let mut map = HeaderMap::new();
+        map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+        let cose_doc1 = COSESign1::new(TEXT, &map, &ec_private).unwrap();
+
+        assert!(cose_doc1.verify_signature(&ec_public).unwrap());
+        assert!(!cose_doc1.verify_signature(&ec_public_other).unwrap());
     }
 }
