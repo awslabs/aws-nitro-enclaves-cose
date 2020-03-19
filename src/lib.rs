@@ -11,7 +11,7 @@ use serde_cbor::Value as CborValue;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HeaderMap(
     #[serde(deserialize_with = "::serde_with::rust::maps_duplicate_key_is_error::deserialize")]
     BTreeMap<CborValue, CborValue>,
@@ -658,7 +658,7 @@ mod tests {
         let (_, ec_public) = get_ec256_test_key();
 
         // This output was validated against COSE-C implementation
-        let cose_doc = COSESign1::from_bytes(&vec![
+        let cose_doc = COSESign1::from_bytes(&[
             0x84, /* Protected: {1: -7} */
             0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
             0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
@@ -689,7 +689,7 @@ mod tests {
         let (_, ec_public) = get_ec384_test_key();
 
         // This output was validated against COSE-C implementation
-        let cose_doc = COSESign1::from_bytes(&vec![
+        let cose_doc = COSESign1::from_bytes(&[
             0x84, /* Protected: {1: -35} */
             0x44, 0xA1, 0x01, 0x38, 0x22, /* Unprotected: {4: '11'} */
             0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
@@ -722,7 +722,7 @@ mod tests {
         let (_, ec_public) = get_ec512_test_key();
 
         // This output was validated against COSE-C implementation
-        let cose_doc = COSESign1::from_bytes(&vec![
+        let cose_doc = COSESign1::from_bytes(&[
             0x84, /* Protected: {1: -36} */
             0x44, 0xA1, 0x01, 0x38, 0x23, /* Unprotected: {4: '11'} */
             0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
@@ -840,7 +840,7 @@ mod tests {
     fn cose_sign1_ec256_tampered_content() {
         let (_, ec_public) = get_ec256_test_key();
 
-        let cose_doc = COSESign1::from_bytes(&vec![
+        let cose_doc = COSESign1::from_bytes(&[
             0x84, /* Protected: {1: -7} */
             0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
             0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
@@ -870,7 +870,7 @@ mod tests {
     fn cose_sign1_ec256_tampered_signature() {
         let (_, ec_public) = get_ec256_test_key();
 
-        let cose_doc = COSESign1::from_bytes(&vec![
+        let cose_doc = COSESign1::from_bytes(&[
             0x84, /* Protected: {1: -7} */
             0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
             0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
