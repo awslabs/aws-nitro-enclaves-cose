@@ -1,11 +1,10 @@
-## My Project
+## COSE for AWS Nitro Enclaves
 
-TODO: Fill this README out!
+This library aims to provide a safe Rust implementation of COSE.
+Currently, only COSE Sign1 is implemented, with the ability to sign and verify
+COSE Sign1 objects.
 
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
+It uses openssl to provide the required crypto primitives.
 
 ## Security
 
