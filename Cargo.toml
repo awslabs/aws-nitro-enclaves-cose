@@ -3,6 +3,11 @@ name = "rust-cose"
 version = "0.1.0"
 authors = ["Petre Eftime <epetre@amazon.com>"]
 edition = "2018"
+license = "Apache-2.0"
+keywords = ["COSE"]
+categories = ["cryptography"]
+repository = "https://github.com/awslabs/aws-nitro-enclaves-cose"
+description = "This library aims to provide a safe Rust implementation of COSE, with COSE Sign1 currently implemented."
 
 [dependencies]
 serde_cbor = "0.11"
