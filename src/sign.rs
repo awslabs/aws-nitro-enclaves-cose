@@ -1,10 +1,10 @@
 //! COSE Signing
 
 use openssl::bn::BigNum;
-use openssl::ec::EcKeyRef;
 use openssl::ecdsa::EcdsaSig;
 use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
+use openssl::pkey::PKeyRef;
 use openssl::pkey::{Private, Public};
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
@@ -281,8 +281,9 @@ impl COSESign1 {
     pub fn new(
         payload: &[u8],
         unprotected: &HeaderMap,
-        key: &EcKeyRef<Private>,
+        key: &PKeyRef<Private>,
     ) -> Result<Self, COSEError> {
+        let key = key.ec_key().map_err(|_| COSEError::UnimplementedError)?;
         let curve_name = key
             .group()
             .curve_name()
@@ -361,7 +362,8 @@ impl COSESign1 {
 
     /// This checks the signature included in the structure against the given public key and
     /// returns true if the signature matches the given key.
-    pub fn verify_signature(&self, key: &EcKeyRef<Public>) -> Result<bool, COSEError> {
+    pub fn verify_signature(&self, key: &PKeyRef<Public>) -> Result<bool, COSEError> {
+        let key = key.ec_key().map_err(|_| COSEError::UnimplementedError)?;
         // Don't support anonymous curves
         let curve_name = key.group().curve_name().ok_or_else(|| {
             COSEError::UnsupportedError("Anonymous curves are not supported".to_string())
@@ -438,8 +440,8 @@ impl COSESign1 {
     /// This gets the `payload` of the document. If `key` is provided, it only gets the payload
     /// if the signature is correctly verified, otherwise returns
     /// `Err(COSEError::UnverifiedSignature)`.
-    pub fn get_payload(&self, key: Option<&EcKeyRef<Public>>) -> Result<Vec<u8>, COSEError> {
-        if key.is_some() && !self.verify_signature(key.unwrap())? {
+    pub fn get_payload(&self, key: Option<&PKeyRef<Public>>) -> Result<Vec<u8>, COSEError> {
+        if key.is_some() && !self.verify_signature(&key.unwrap())? {
             return Err(COSEError::UnverifiedSignature);
         }
         Ok(self.2.to_vec())
@@ -449,7 +451,7 @@ impl COSESign1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openssl::ec::EcKey;
+    use openssl::pkey::PKey;
 
     // Public domain work: Pride and Prejudice by Jane Austen, taken from https://www.gutenberg.org/files/1342/1342.txt
     const TEXT: &[u8] = b"It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.";
@@ -558,7 +560,7 @@ mod tests {
     }
 
     /// Static PRIME256V1/P-256 key to be used when cross-validating the implementation
-    fn get_ec256_test_key() -> (EcKey<Private>, EcKey<Public>) {
+    fn get_ec256_test_key() -> (PKey<Private>, PKey<Public>) {
         let alg =
             openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
         let x = openssl::bn::BigNum::from_hex_str(
@@ -578,11 +580,14 @@ mod tests {
             openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
         let ec_private =
             openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key()).unwrap();
-        (ec_private, ec_public)
+        (
+            PKey::from_ec_key(ec_private).unwrap(),
+            PKey::from_ec_key(ec_public).unwrap(),
+        )
     }
 
     /// Static SECP384R1/P-384 key to be used when cross-validating the implementation
-    fn get_ec384_test_key() -> (EcKey<Private>, EcKey<Public>) {
+    fn get_ec384_test_key() -> (PKey<Private>, PKey<Public>) {
         let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP384R1).unwrap();
         let x = openssl::bn::BigNum::from_hex_str(
             "5a829f62f2f4f095c0e922719285b4b981c677912870a413137a5d7319916fa8\
@@ -603,11 +608,14 @@ mod tests {
             openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
         let ec_private =
             openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key()).unwrap();
-        (ec_private, ec_public)
+        (
+            PKey::from_ec_key(ec_private).unwrap(),
+            PKey::from_ec_key(ec_public).unwrap(),
+        )
     }
 
     /// Static SECP521R1/P-512 key to be used when cross-validating the implementation
-    fn get_ec512_test_key() -> (EcKey<Private>, EcKey<Public>) {
+    fn get_ec512_test_key() -> (PKey<Private>, PKey<Public>) {
         let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP521R1).unwrap();
         let x = openssl::bn::BigNum::from_hex_str(
             "004365ee31a93b6e69b2c895890aaae14194cd84601bbb59587ad08ab5960522\
@@ -631,32 +639,44 @@ mod tests {
             openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
         let ec_private =
             openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key()).unwrap();
-        (ec_private, ec_public)
+        (
+            PKey::from_ec_key(ec_private).unwrap(),
+            PKey::from_ec_key(ec_public).unwrap(),
+        )
     }
 
     /// Randomly generate PRIME256V1/P-256 key to use for validating signining internally
-    fn generate_ec256_test_key() -> (EcKey<Private>, EcKey<Public>) {
+    fn generate_ec256_test_key() -> (PKey<Private>, PKey<Public>) {
         let alg =
             openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
         let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
         let ec_public = openssl::ec::EcKey::from_public_key(&alg, ec_private.public_key()).unwrap();
-        (ec_private, ec_public)
+        (
+            PKey::from_ec_key(ec_private).unwrap(),
+            PKey::from_ec_key(ec_public).unwrap(),
+        )
     }
 
     /// Randomly generate SECP384R1/P-384 key to use for validating signining internally
-    fn generate_ec384_test_key() -> (EcKey<Private>, EcKey<Public>) {
+    fn generate_ec384_test_key() -> (PKey<Private>, PKey<Public>) {
         let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP384R1).unwrap();
         let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
         let ec_public = openssl::ec::EcKey::from_public_key(&alg, ec_private.public_key()).unwrap();
-        (ec_private, ec_public)
+        (
+            PKey::from_ec_key(ec_private).unwrap(),
+            PKey::from_ec_key(ec_public).unwrap(),
+        )
     }
 
     /// Randomly generate SECP521R1/P-512 key to use for validating signing internally
-    fn generate_ec512_test_key() -> (EcKey<Private>, EcKey<Public>) {
+    fn generate_ec512_test_key() -> (PKey<Private>, PKey<Public>) {
         let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP521R1).unwrap();
         let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
         let ec_public = openssl::ec::EcKey::from_public_key(&alg, ec_private.public_key()).unwrap();
-        (ec_private, ec_public)
+        (
+            PKey::from_ec_key(ec_private).unwrap(),
+            PKey::from_ec_key(ec_public).unwrap(),
+        )
     }
 
     #[test]
@@ -811,6 +831,7 @@ mod tests {
     fn unknown_curve() {
         let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP256K1).unwrap();
         let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
+        let ec_private = PKey::from_ec_key(ec_private).unwrap();
         let map = HeaderMap::new();
         let result = COSESign1::new(TEXT, &map, &ec_private);
         assert!(result.is_err());
