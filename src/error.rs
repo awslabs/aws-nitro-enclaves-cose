@@ -1,5 +1,8 @@
 //! COSE Operation errors and causes
 
+use std::error::Error;
+use std::fmt;
+
 use serde_cbor::Error as CborError;
 
 #[derive(Debug)]
@@ -19,4 +22,27 @@ pub enum COSEError {
     SpecificationError(String),
     /// Error while serializing or deserializing structures.
     SerializationError(CborError),
+}
+
+impl fmt::Display for COSEError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            COSEError::SignatureError(e) => write!(f, "Signature error: {}", e),
+            COSEError::UnimplementedError => write!(f, "Not implemented"),
+            COSEError::UnsupportedError(e) => write!(f, "Not supported: {}", e),
+            COSEError::UnverifiedSignature => write!(f, "Unverified signature"),
+            COSEError::SpecificationError(e) => write!(f, "Specification error: {}", e),
+            COSEError::SerializationError(e) => write!(f, "Serialization error: {}", e),
+        }
+    }
+}
+
+impl Error for COSEError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            COSEError::SignatureError(e) => Some(e),
+            COSEError::SerializationError(e) => Some(e),
+            _ => None,
+        }
+    }
 }
