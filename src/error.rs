@@ -22,6 +22,8 @@ pub enum COSEError {
     SpecificationError(String),
     /// Error while serializing or deserializing structures.
     SerializationError(CborError),
+    /// Tag is missing or incorrect
+    TagError(Option<u64>),
 }
 
 impl fmt::Display for COSEError {
@@ -33,6 +35,8 @@ impl fmt::Display for COSEError {
             COSEError::UnverifiedSignature => write!(f, "Unverified signature"),
             COSEError::SpecificationError(e) => write!(f, "Specification error: {}", e),
             COSEError::SerializationError(e) => write!(f, "Serialization error: {}", e),
+            COSEError::TagError(Some(tag)) => write!(f, "Tag {} was not expected", tag),
+            COSEError::TagError(None) => write!(f, "Expected tag is missing"),
         }
     }
 }
