@@ -6,7 +6,7 @@ use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
 use openssl::pkey::PKeyRef;
 use openssl::pkey::{Private, Public};
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
@@ -194,19 +194,33 @@ impl SigStructure {
 ///   the spec and the only way to achieve this is to add the token at the
 ///   start of the serialized object, since the serde_cbor library doesn't
 ///   support custom tags.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoseSign1(
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoseSign1 {
     /// protected: empty_or_serialized_map,
-    ByteBuf,
+    protected: ByteBuf,
     /// unprotected: HeaderMap
-    HeaderMap,
+    unprotected: HeaderMap,
     /// payload: bstr
     /// The spec allows payload to be nil and transported separately, but it's not useful at the
     /// moment, so this is just a ByteBuf for simplicity.
-    ByteBuf,
+    payload: ByteBuf,
     /// signature: bstr
-    ByteBuf,
-);
+    signature: ByteBuf,
+}
+
+impl Serialize for CoseSign1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(4))?;
+        seq.serialize_element(&self.protected)?;
+        seq.serialize_element(&self.unprotected)?;
+        seq.serialize_element(&self.payload)?;
+        seq.serialize_element(&self.signature)?;
+        seq.end()
+    }
+}
 
 impl CoseSign1 {
     /// Follows the recommandations put in place by the RFC and doesn't deal with potential
@@ -314,12 +328,12 @@ impl CoseSign1 {
         let offset_copy = key_length - bytes_s.len() + key_length;
         signature_bytes[offset_copy..offset_copy + bytes_s.len()].copy_from_slice(&bytes_s);
 
-        Ok(CoseSign1(
-            ByteBuf::from(protected_bytes),
-            unprotected.clone(),
-            ByteBuf::from(payload.to_vec()),
-            ByteBuf::from(signature_bytes),
-        ))
+        Ok(CoseSign1 {
+            protected: ByteBuf::from(protected_bytes),
+            unprotected: unprotected.clone(),
+            payload: ByteBuf::from(payload.to_vec()),
+            signature: ByteBuf::from(signature_bytes),
+        })
     }
 
     /// Serializes the structure for transport / storage. If `tagged` is true, the optional #6.18
@@ -343,7 +357,7 @@ impl CoseSign1 {
             None | Some(18) => (),
             Some(tag) => return Err(CoseError::TagError(Some(tag))),
         }
-        let protected = cosesign1.value.0.as_slice();
+        let protected = cosesign1.value.protected.as_slice();
         let _: HeaderMap =
             serde_cbor::from_slice(protected).map_err(CoseError::SerializationError)?;
         Ok(cosesign1.value)
@@ -360,7 +374,7 @@ impl CoseSign1 {
             other => return Err(CoseError::TagError(other)),
         }
 
-        let protected = cosesign1.value.0.as_slice();
+        let protected = cosesign1.value.protected.as_slice();
         let _: HeaderMap =
             serde_cbor::from_slice(protected).map_err(CoseError::SerializationError)?;
         Ok(cosesign1.value)
@@ -393,7 +407,7 @@ impl CoseSign1 {
         // in the protected headers. To be compatible with other implementations this should be
         // more flexible, as stated in the spec.
         let protected: HeaderMap =
-            HeaderMap::from_bytes(&self.0).map_err(CoseError::SerializationError)?;
+            HeaderMap::from_bytes(&self.protected).map_err(CoseError::SerializationError)?;
 
         if let Some(protected_signature_alg_val) = protected.get(&CborValue::Integer(1)) {
             let protected_signature_alg = match protected_signature_alg_val {
@@ -417,11 +431,8 @@ impl CoseSign1 {
             ));
         }
 
-        let sig_structure = SigStructure::new_sign1(
-            &self.0, /* protected headers */
-            &self.2, /* payload */
-        )
-        .map_err(CoseError::SerializationError)?;
+        let sig_structure = SigStructure::new_sign1(&self.protected, &self.payload)
+            .map_err(CoseError::SerializationError)?;
 
         let struct_digest = hash(
             digest,
@@ -432,7 +443,7 @@ impl CoseSign1 {
         .map_err(CoseError::SignatureError)?;
 
         // Recover the R and S factors from the signature contained in the object
-        let (bytes_r, bytes_s) = self.3.split_at(key_length);
+        let (bytes_r, bytes_s) = self.signature.split_at(key_length);
 
         let r = BigNum::from_slice(&bytes_r).map_err(CoseError::SignatureError)?;
         let s = BigNum::from_slice(&bytes_s).map_err(CoseError::SignatureError)?;
@@ -453,8 +464,8 @@ impl CoseSign1 {
             return Err(CoseError::UnverifiedSignature);
         }
         let protected: HeaderMap =
-            HeaderMap::from_bytes(&self.0).map_err(CoseError::SerializationError)?;
-        Ok((protected, self.2.to_vec()))
+            HeaderMap::from_bytes(&self.protected).map_err(CoseError::SerializationError)?;
+        Ok((protected, self.payload.to_vec()))
     }
 
     /// This gets the `payload` of the document. If `key` is provided, it only gets the payload
@@ -464,12 +475,12 @@ impl CoseSign1 {
         if key.is_some() && !self.verify_signature(&key.unwrap())? {
             return Err(CoseError::UnverifiedSignature);
         }
-        Ok(self.2.to_vec())
+        Ok(self.payload.to_vec())
     }
 
     /// This gets the `unprotected` headers from the document.
     pub fn get_unprotected(&self) -> &HeaderMap {
-        &self.1
+        &self.unprotected
     }
 }
 
@@ -834,6 +845,8 @@ mod tests {
         let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
         // Tag 6.18 should be present
         assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+        // The value should be a sequence
+        assert_eq!(tagged_bytes[1], 4 << 5 | 4);
         let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
         assert_eq!(
@@ -882,7 +895,10 @@ mod tests {
         map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
         let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
-        let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
+        let cose_doc1_bytes = cose_doc1.as_bytes(false).unwrap();
+        // The value should be a sequence
+        assert_eq!(cose_doc1_bytes[0], 4 << 5 | 4);
+        let cose_doc2 = CoseSign1::from_bytes(&cose_doc1_bytes).unwrap();
 
         assert_eq!(
             cose_doc1.get_payload(None).unwrap(),
