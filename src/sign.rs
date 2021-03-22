@@ -6,7 +6,7 @@ use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
 use openssl::pkey::PKeyRef;
 use openssl::pkey::{Private, Public};
-use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
+use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
@@ -194,7 +194,7 @@ impl SigStructure {
 ///   the spec and the only way to achieve this is to add the token at the
 ///   start of the serialized object, since the serde_cbor library doesn't
 ///   support custom tags.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CoseSign1 {
     /// protected: empty_or_serialized_map,
     protected: ByteBuf,
@@ -219,6 +219,65 @@ impl Serialize for CoseSign1 {
         seq.serialize_element(&self.payload)?;
         seq.serialize_element(&self.signature)?;
         seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CoseSign1 {
+    fn deserialize<D>(deserializer: D) -> Result<CoseSign1, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{Error, SeqAccess, Visitor};
+        use std::fmt;
+
+        struct CoseSign1Visitor;
+
+        impl<'de> Visitor<'de> for CoseSign1Visitor {
+            type Value = CoseSign1;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a possibly tagged CoseSign1 structure")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<CoseSign1, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                // This is the untagged version
+                let protected = match seq.next_element()? {
+                    Some(v) => v,
+                    None => return Err(A::Error::missing_field("protected")),
+                };
+                let unprotected = match seq.next_element()? {
+                    Some(v) => v,
+                    None => return Err(A::Error::missing_field("unprotected")),
+                };
+                let payload = match seq.next_element()? {
+                    Some(v) => v,
+                    None => return Err(A::Error::missing_field("payload")),
+                };
+                let signature = match seq.next_element()? {
+                    Some(v) => v,
+                    None => return Err(A::Error::missing_field("signature")),
+                };
+                Ok(CoseSign1 {
+                    protected,
+                    unprotected,
+                    payload,
+                    signature,
+                })
+            }
+
+            fn visit_newtype_struct<D>(self, deserializer: D) -> Result<CoseSign1, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                // This is the tagged version: we ignore the tag part, and just go into it
+                deserializer.deserialize_seq(CoseSign1Visitor)
+            }
+        }
+
+        deserializer.deserialize_any(CoseSign1Visitor)
     }
 }
 
@@ -886,6 +945,24 @@ mod tests {
             Some(&CborValue::Bytes(b"12".to_vec())),
         );
         assert_eq!(payload, TEXT,);
+    }
+
+    #[test]
+    fn cose_sign1_ec256_text_tagged_serde() {
+        let (ec_private, ec_public) = generate_ec256_test_key();
+        let mut map = HeaderMap::new();
+        map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+        let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+        let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+        // Tag 6.18 should be present
+        assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+        let cose_doc2: CoseSign1 = serde_cbor::from_slice(&tagged_bytes).unwrap();
+
+        assert_eq!(
+            cose_doc1.get_payload(None).unwrap(),
+            cose_doc2.get_payload(Some(&ec_public)).unwrap()
+        );
     }
 
     #[test]
