@@ -510,6 +510,11 @@ impl COSESign1 {
         }
         Ok(self.2.to_vec())
     }
+
+    /// This gets the `unprotected` headers from the document.
+    pub fn get_unprotected(&self) -> &HeaderMap {
+        &self.1
+    }
 }
 
 #[cfg(test)]
@@ -855,6 +860,11 @@ mod tests {
         assert_eq!(
             cose_doc1.get_payload(None).unwrap(),
             cose_doc2.get_payload(Some(&ec_public)).unwrap()
+        );
+        assert!(!cose_doc2.get_unprotected().is_empty(),);
+        assert_eq!(
+            cose_doc2.get_unprotected().get(&CborValue::Integer(4)),
+            Some(&CborValue::Bytes(b"11".to_vec())),
         );
     }
 
