@@ -337,16 +337,40 @@ impl COSESign1 {
         unprotected: &HeaderMap,
         key: &PKeyRef<Private>,
     ) -> Result<Self, COSEError> {
+        let ec_key = key.ec_key().map_err(|_| COSEError::UnimplementedError)?;
+
+        let curve_name = ec_key
+            .group()
+            .curve_name()
+            .ok_or(COSEError::UnimplementedError)?;
+
+        let (sig_alg, _, _) = COSESign1::curve_to_parameters(curve_name)?;
+
+        let mut protected = HeaderMap::new();
+        protected.insert(1.into(), (sig_alg as i8).into());
+
+        Self::new_with_protected(payload, &protected, unprotected, key)
+    }
+
+    /// Creates a COSESign1 structure from the given payload and some protected and unprotected data
+    /// in the form of a HeaderMap. Signs the content with the given key using the recommedations
+    /// from the spec and sets the algorithm used into the protected header.
+    pub fn new_with_protected(
+        payload: &[u8],
+        protected: &HeaderMap,
+        unprotected: &HeaderMap,
+        key: &PKeyRef<Private>,
+    ) -> Result<Self, COSEError> {
         let key = key.ec_key().map_err(|_| COSEError::UnimplementedError)?;
+
         let curve_name = key
             .group()
             .curve_name()
             .ok_or(COSEError::UnimplementedError)?;
 
-        let (sig_alg, digest, key_length) = COSESign1::curve_to_parameters(curve_name)?;
+        let (_, digest, key_length) = COSESign1::curve_to_parameters(curve_name)?;
 
         // Create the SigStruct to sign
-        let protected: HeaderMap = sig_alg.into();
         let protected_bytes =
             map_to_empty_or_serialized(&protected).map_err(COSEError::SerializationError)?;
 
@@ -514,6 +538,21 @@ impl COSESign1 {
         Ok(sig
             .verify(&struct_digest, &key)
             .map_err(COSEError::SignatureError)?)
+    }
+
+    /// This gets the `payload` and `protected` data of the document.
+    /// If `key` is provided, it only gets the data if the signature is correctly verified,
+    /// otherwise returns `Err(COSEError::UnverifiedSignature)`.
+    pub fn get_protected_and_payload(
+        &self,
+        key: Option<&PKeyRef<Public>>,
+    ) -> Result<(HeaderMap, Vec<u8>), COSEError> {
+        if key.is_some() && !self.verify_signature(key.unwrap())? {
+            return Err(COSEError::UnverifiedSignature);
+        }
+        let protected: HeaderMap =
+            HeaderMap::from_bytes(&self.0).map_err(COSEError::SerializationError)?;
+        Ok((protected, self.2.to_vec()))
     }
 
     /// This gets the `payload` of the document. If `key` is provided, it only gets the payload
@@ -907,6 +946,37 @@ mod tests {
             cose_doc1.get_payload(None).unwrap(),
             cose_doc2.get_payload(Some(&ec_public)).unwrap()
         );
+
+    fn cose_sign1_ec256_text_with_extra_protected() {
+        let (ec_private, ec_public) = generate_ec256_test_key();
+
+        let mut protected = HeaderMap::new();
+        protected.insert(
+            CborValue::Integer(1),
+            (SignatureAlgorithm::ES256 as i8).into(),
+        );
+        protected.insert(CborValue::Integer(15), CborValue::Bytes(b"12".to_vec()));
+
+        let mut unprotected = HeaderMap::new();
+        unprotected.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+        let cose_doc1 =
+            COSESign1::new_with_protected(TEXT, &protected, &unprotected, &ec_private).unwrap();
+        let cose_doc2 = COSESign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
+
+        let (protected, payload) = cose_doc2
+            .get_protected_and_payload(Some(&ec_public))
+            .unwrap();
+
+        assert_eq!(
+            protected.get(&CborValue::Integer(1)),
+            Some(&CborValue::Integer(-7)),
+        );
+        assert_eq!(
+            protected.get(&CborValue::Integer(15)),
+            Some(&CborValue::Bytes(b"12".to_vec())),
+        );
+        assert_eq!(payload, TEXT,);
     }
 
     #[test]
