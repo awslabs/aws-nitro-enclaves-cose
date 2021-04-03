@@ -481,9 +481,8 @@ impl COSESign1 {
         let s = BigNum::from_slice(&bytes_s).map_err(COSEError::SignatureError)?;
 
         let sig = EcdsaSig::from_private_components(r, s).map_err(COSEError::SignatureError)?;
-        Ok(sig
-            .verify(&struct_digest, &key)
-            .map_err(COSEError::SignatureError)?)
+        sig.verify(&struct_digest, &key)
+            .map_err(COSEError::SignatureError)
     }
 
     /// This gets the `payload` and `protected` data of the document.
