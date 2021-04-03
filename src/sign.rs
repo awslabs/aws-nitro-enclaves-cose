@@ -62,13 +62,13 @@ pub enum SignatureAlgorithm {
     ES512 = -36,
 }
 
-impl Into<HeaderMap> for SignatureAlgorithm {
-    fn into(self) -> HeaderMap {
+impl From<SignatureAlgorithm> for HeaderMap {
+    fn from(sig_alg: SignatureAlgorithm) -> Self {
         // Convenience method for creating the map that would go into the signature structures
         // Can be appended into a larger HeaderMap
         // `1` is the index defined in the spec for Algorithm
         let mut map = HeaderMap::new();
-        map.insert(1.into(), (self as i8).into());
+        map.insert(1.into(), (sig_alg as i8).into());
         map
     }
 }
