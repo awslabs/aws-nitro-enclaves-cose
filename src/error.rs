@@ -22,8 +22,10 @@ pub enum COSEError {
     SpecificationError(String),
     /// Error while serializing or deserializing structures.
     SerializationError(CborError),
-    /// Tag is missing or incorrect
+    /// Tag is missing or incorrect.
     TagError(Option<u64>),
+    /// Encryption could not be performed due to OpenSSL error.
+    EncryptionError(openssl::error::ErrorStack),
 }
 
 impl fmt::Display for COSEError {
@@ -37,6 +39,7 @@ impl fmt::Display for COSEError {
             COSEError::SerializationError(e) => write!(f, "Serialization error: {}", e),
             COSEError::TagError(Some(tag)) => write!(f, "Tag {} was not expected", tag),
             COSEError::TagError(None) => write!(f, "Expected tag is missing"),
+            COSEError::EncryptionError(e) => write!(f, "Encryption error: {}", e),
         }
     }
 }
