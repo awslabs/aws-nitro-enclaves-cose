@@ -11,6 +11,7 @@
 
 pub mod error;
 pub mod sign;
+pub mod header_map;
 
 #[doc(inline)]
 pub use crate::sign::COSESign1;
