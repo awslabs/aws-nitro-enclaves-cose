@@ -26,6 +26,9 @@ pub enum CoseError {
     TagError(Option<u64>),
     /// Encryption could not be performed due to OpenSSL error.
     EncryptionError(openssl::error::ErrorStack),
+    /// TPM error occured
+    #[cfg(feature = "key_tpm")]
+    TpmError(tss_esapi::Error),
 }
 
 impl fmt::Display for CoseError {
@@ -40,6 +43,8 @@ impl fmt::Display for CoseError {
             CoseError::TagError(Some(tag)) => write!(f, "Tag {} was not expected", tag),
             CoseError::TagError(None) => write!(f, "Expected tag is missing"),
             CoseError::EncryptionError(e) => write!(f, "Encryption error: {}", e),
+            #[cfg(feature = "key_tpm")]
+            CoseError::TpmError(e) => write!(f, "TPM error: {}", e),
         }
     }
 }

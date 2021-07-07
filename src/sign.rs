@@ -1144,4 +1144,137 @@ mod tests {
             }
         }
     }
+
+    #[cfg(feature = "key_tpm")]
+    mod tpm {
+        use super::TEXT;
+        use crate::{crypto::tpm::TpmKey, sign::*};
+
+        use tss_esapi::{
+            attributes::SessionAttributesBuilder,
+            constants::SessionType,
+            interface_types::{
+                algorithm::HashingAlgorithm, ecc::EccCurve, resource_handles::Hierarchy,
+            },
+            structures::SymmetricDefinition,
+            utils::{create_unrestricted_signing_ecc_public, AsymSchemeUnion},
+            Context, Tcti,
+        };
+
+        #[test]
+        fn cose_sign_tpm() {
+            let mut tpm_context =
+                Context::new(Tcti::from_environment_variable().expect("Failed to get TCTI"))
+                    .expect("Failed to create context");
+            let tpm_session = tpm_context
+                .start_auth_session(
+                    None,
+                    None,
+                    None,
+                    SessionType::Hmac,
+                    SymmetricDefinition::AES_128_CFB,
+                    HashingAlgorithm::Sha256,
+                )
+                .expect("Error creating TPM session")
+                .expect("Expected AuthSession");
+            let (session_attrs, session_attrs_mask) = SessionAttributesBuilder::new()
+                .with_decrypt(true)
+                .with_encrypt(true)
+                .build();
+            tpm_context
+                .tr_sess_set_attributes(tpm_session, session_attrs, session_attrs_mask)
+                .expect("Error setting session attributes");
+            tpm_context.set_sessions((Some(tpm_session), None, None));
+            let prim_key = tpm_context
+                .create_primary(
+                    Hierarchy::Owner,
+                    &create_unrestricted_signing_ecc_public(
+                        AsymSchemeUnion::ECDSA(HashingAlgorithm::Sha256),
+                        EccCurve::NistP256,
+                    )
+                    .expect("Error creating TPM2B_PUBLIC"),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("Unable to create primary key")
+                .key_handle;
+            let mut tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
+
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &mut tpm_key).unwrap();
+            let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+
+            // Tag 6.18 should be present
+            assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+            let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+            assert_eq!(
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&mut tpm_key)).unwrap()
+            );
+        }
+
+        #[test]
+        fn cose_sign_tpm_invalid_signature() {
+            let mut tpm_context =
+                Context::new(Tcti::from_environment_variable().expect("Failed to get TCTI"))
+                    .expect("Failed to create context");
+            let tpm_session = tpm_context
+                .start_auth_session(
+                    None,
+                    None,
+                    None,
+                    SessionType::Hmac,
+                    SymmetricDefinition::AES_128_CFB,
+                    HashingAlgorithm::Sha256,
+                )
+                .expect("Error creating TPM session")
+                .expect("Expected AuthSession");
+            let (session_attrs, session_attrs_mask) = SessionAttributesBuilder::new()
+                .with_decrypt(true)
+                .with_encrypt(true)
+                .build();
+            tpm_context
+                .tr_sess_set_attributes(tpm_session, session_attrs, session_attrs_mask)
+                .expect("Error setting session attributes");
+            tpm_context.set_sessions((Some(tpm_session), None, None));
+            let prim_key = tpm_context
+                .create_primary(
+                    Hierarchy::Owner,
+                    &create_unrestricted_signing_ecc_public(
+                        AsymSchemeUnion::ECDSA(HashingAlgorithm::Sha256),
+                        EccCurve::NistP256,
+                    )
+                    .expect("Error creating TPM2B_PUBLIC"),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("Unable to create primary key")
+                .key_handle;
+            let mut tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
+
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            let mut cose_doc1 = CoseSign1::new(TEXT, &map, &mut tpm_key).unwrap();
+
+            // Mangle the signature
+            cose_doc1.signature[0] = 0;
+
+            let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+            let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+            match cose_doc2.get_payload(Some(&mut tpm_key)) {
+                Ok(_) => panic!("Did not fail"),
+                Err(CoseError::UnverifiedSignature) => {}
+                Err(e) => {
+                    panic!("Unexpected error: {:?}", e)
+                }
+            }
+        }
+    }
 }
