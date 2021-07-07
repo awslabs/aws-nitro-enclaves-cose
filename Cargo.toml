@@ -15,7 +15,13 @@ serde_repr = "0.1"
 serde_bytes = "0.11"
 serde_with = "1.5"
 openssl = "0.10"
+tss-esapi = { version = "5.1", optional = true }
 
 [dependencies.serde]
 version = "1.0"
 features = ["derive"]
+
+[features]
+default = ["key_openssl_pkey"]
+key_openssl_pkey = []
+key_tpm = ["tss-esapi"]

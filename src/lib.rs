@@ -9,6 +9,7 @@
 //!
 //! Currently only COSE Sign1 and COSE Encrypt0 are implemented.
 
+pub mod crypto;
 pub mod encrypt;
 pub mod error;
 pub mod header_map;
