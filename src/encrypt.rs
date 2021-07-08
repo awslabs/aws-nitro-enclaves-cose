@@ -7,7 +7,7 @@ use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 
-use crate::error::COSEError;
+use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
 const KTY: i8 = 1;
@@ -194,7 +194,7 @@ impl EncStructure {
 ///      ciphertext : bstr / nil,
 ///  ]
 #[derive(Debug, Clone, Deserialize)]
-pub struct COSEEncrypt0 {
+pub struct CoseEncrypt0 {
     /// protected: empty_or_serialized_map,
     protected: ByteBuf,
     /// unprotected: HeaderMap
@@ -205,7 +205,7 @@ pub struct COSEEncrypt0 {
     ciphertext: ByteBuf,
 }
 
-impl Serialize for COSEEncrypt0 {
+impl Serialize for CoseEncrypt0 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -218,18 +218,18 @@ impl Serialize for COSEEncrypt0 {
     }
 }
 
-impl COSEEncrypt0 {
+impl CoseEncrypt0 {
     /// Creates a new instance of the COSE_Encrypt0 structure and encrypts the provided payload.
     /// https://datatracker.ietf.org/doc/html/rfc8152#section-5.3
     pub fn new(
         payload: &[u8],
         cipher_config: CipherConfiguration,
         key: &[u8],
-    ) -> Result<Self, COSEError> {
+    ) -> Result<Self, CoseError> {
         let cose_alg = match cipher_config.cose_alg(key) {
             Some(v) => v,
             None => {
-                return Err(COSEError::UnsupportedError(
+                return Err(CoseError::UnsupportedError(
                     "Unsupported encryption algorithm".to_string(),
                 ))
             }
@@ -245,10 +245,10 @@ impl COSEEncrypt0 {
         unprotected.insert(IV.into(), CborValue::Bytes(iv.to_owned()));
 
         let protected_bytes =
-            map_to_empty_or_serialized(&protected).map_err(COSEError::SerializationError)?;
+            map_to_empty_or_serialized(&protected).map_err(CoseError::SerializationError)?;
 
         let enc_structure =
-            EncStructure::new_encrypt0(&protected_bytes).map_err(COSEError::SerializationError)?;
+            EncStructure::new_encrypt0(&protected_bytes).map_err(CoseError::SerializationError)?;
 
         let mut tag = vec![0; cose_alg.tag_size()];
         let mut ciphertext = encrypt_aead(
@@ -257,15 +257,15 @@ impl COSEEncrypt0 {
             Some(&iv[..]),
             &enc_structure
                 .as_bytes()
-                .map_err(COSEError::SerializationError)?,
+                .map_err(CoseError::SerializationError)?,
             payload,
             &mut tag,
         )
-        .map_err(COSEError::EncryptionError)?;
+        .map_err(CoseError::EncryptionError)?;
 
         ciphertext.append(&mut tag);
 
-        Ok(COSEEncrypt0 {
+        Ok(CoseEncrypt0 {
             protected: ByteBuf::from(protected_bytes),
             unprotected,
             ciphertext: ByteBuf::from(ciphertext),
@@ -275,14 +275,14 @@ impl COSEEncrypt0 {
     /// Decrypt the ciphertext in the COSE_Encrypt0 structure and returns both
     /// the protected and unprotected HeaderMap(s).
     /// https://datatracker.ietf.org/doc/html/rfc8152#section-5.3
-    pub fn decrypt(&self, key: &[u8]) -> Result<(HeaderMap, &HeaderMap, Vec<u8>), COSEError> {
+    pub fn decrypt(&self, key: &[u8]) -> Result<(HeaderMap, &HeaderMap, Vec<u8>), CoseError> {
         let protected: HeaderMap =
-            HeaderMap::from_bytes(&self.protected).map_err(COSEError::SerializationError)?;
+            HeaderMap::from_bytes(&self.protected).map_err(CoseError::SerializationError)?;
 
         let protected_enc_alg = match protected.get(&CborValue::Integer(1)) {
             Some(CborValue::Integer(val)) => val,
             _ => {
-                return Err(COSEError::SpecificationError(
+                return Err(CoseError::SpecificationError(
                     "Protected Header contains invalid Encryption Algorithm specification"
                         .to_string(),
                 ))
@@ -292,22 +292,22 @@ impl COSEEncrypt0 {
         let cose_alg = match COSEAlgorithm::from_value(*protected_enc_alg as i8) {
             Some(v) => v,
             None => {
-                return Err(COSEError::UnsupportedError(
+                return Err(CoseError::UnsupportedError(
                     "Unsupported encryption algorithm".to_string(),
                 ))
             }
         };
 
         let protected_bytes =
-            map_to_empty_or_serialized(&protected).map_err(COSEError::SerializationError)?;
+            map_to_empty_or_serialized(&protected).map_err(CoseError::SerializationError)?;
 
         let enc_structure =
-            EncStructure::new_encrypt0(&protected_bytes).map_err(COSEError::SerializationError)?;
+            EncStructure::new_encrypt0(&protected_bytes).map_err(CoseError::SerializationError)?;
 
         let iv = match self.unprotected.get(&CborValue::Integer(5)) {
             Some(CborValue::Bytes(val)) => val,
             _ => {
-                return Err(COSEError::SpecificationError(
+                return Err(CoseError::SpecificationError(
                     "Unprotected Header contains invalid IV specification".to_string(),
                 ))
             }
@@ -323,39 +323,39 @@ impl COSEEncrypt0 {
             Some(&iv),
             &enc_structure
                 .as_bytes()
-                .map_err(COSEError::SerializationError)?,
+                .map_err(CoseError::SerializationError)?,
             ciphertext,
             &tag,
         )
-        .map_err(COSEError::EncryptionError)?;
+        .map_err(CoseError::EncryptionError)?;
 
         Ok((protected, &self.unprotected, payload))
     }
 
     /// Serializes the structure for transport / storage. If `tagged` is true, the optional #6.16
     /// tag is added to the output.
-    pub fn as_bytes(&self, tagged: bool) -> Result<Vec<u8>, COSEError> {
+    pub fn as_bytes(&self, tagged: bool) -> Result<Vec<u8>, CoseError> {
         let bytes = if tagged {
             serde_cbor::to_vec(&serde_cbor::tags::Tagged::new(Some(16), &self))
         } else {
             serde_cbor::to_vec(&self)
         };
-        bytes.map_err(COSEError::SerializationError)
+        bytes.map_err(CoseError::SerializationError)
     }
 
     /// This function deserializes the structure, but doesn't check the contents for correctness
     /// at all. Accepts untagged structures or structures with tag 16.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, COSEError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CoseError> {
         let coseencrypt0: serde_cbor::tags::Tagged<Self> =
-            serde_cbor::from_slice(bytes).map_err(COSEError::SerializationError)?;
+            serde_cbor::from_slice(bytes).map_err(CoseError::SerializationError)?;
 
         match coseencrypt0.tag {
             None | Some(16) => (),
-            Some(tag) => return Err(COSEError::TagError(Some(tag))),
+            Some(tag) => return Err(CoseError::TagError(Some(tag))),
         }
         let protected = coseencrypt0.value.protected.as_slice();
         let _: HeaderMap =
-            serde_cbor::from_slice(protected).map_err(COSEError::SerializationError)?;
+            serde_cbor::from_slice(protected).map_err(CoseError::SerializationError)?;
         Ok(coseencrypt0.value)
     }
 }
@@ -368,14 +368,14 @@ mod tests {
     fn test_encrypt_decrypt() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let cencrypt0 = COSEEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let (_, _, dec) = cencrypt0.decrypt(key).unwrap();
         assert_eq!(dec, plaintext);
         assert_ne!(
             plaintext.to_vec(),
             serde_cbor::to_vec(&cencrypt0.ciphertext).unwrap()
         );
-        let fromb = COSEEncrypt0::from_bytes(&cencrypt0.as_bytes(true).unwrap()[..]).unwrap();
+        let fromb = CoseEncrypt0::from_bytes(&cencrypt0.as_bytes(true).unwrap()[..]).unwrap();
         let (_, _, dec) = fromb.decrypt(key).unwrap();
         assert_eq!(dec, plaintext);
         assert_ne!(
@@ -388,9 +388,9 @@ mod tests {
     fn test_encrypt_unsupported_alg() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x56\x56";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let cencrypt0 = COSEEncrypt0::new(plaintext, CipherConfiguration::Gcm, key);
+        let cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key);
         match cencrypt0.unwrap_err() {
-            COSEError::UnsupportedError(_) => (),
+            CoseError::UnsupportedError(_) => (),
             _ => panic!(),
         }
     }
@@ -399,15 +399,15 @@ mod tests {
     fn test_decrypt_invalid_alg_spec() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let mut cencrypt0 = COSEEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let mut cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let mut protected = HeaderMap::new();
         protected.insert(KTY.into(), CborValue::Text("invalid".to_string()));
         let protected_bytes = map_to_empty_or_serialized(&protected)
-            .map_err(COSEError::SerializationError)
+            .map_err(CoseError::SerializationError)
             .unwrap();
         cencrypt0.protected = ByteBuf::from(protected_bytes);
         match cencrypt0.decrypt(key).unwrap_err() {
-            COSEError::SpecificationError(_) => (),
+            CoseError::SpecificationError(_) => (),
             _ => panic!(),
         }
     }
@@ -416,15 +416,15 @@ mod tests {
     fn test_decrypt_unsupported_openssl_cipher() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let mut cencrypt0 = COSEEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let mut cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let mut protected = HeaderMap::new();
         protected.insert(KTY.into(), CborValue::Integer(42));
         let protected_bytes = map_to_empty_or_serialized(&protected)
-            .map_err(COSEError::SerializationError)
+            .map_err(CoseError::SerializationError)
             .unwrap();
         cencrypt0.protected = ByteBuf::from(protected_bytes);
         match cencrypt0.decrypt(key).unwrap_err() {
-            COSEError::UnsupportedError(_) => (),
+            CoseError::UnsupportedError(_) => (),
             _ => panic!(),
         }
     }
@@ -433,12 +433,12 @@ mod tests {
     fn test_decrypt_invalid_iv() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let mut cencrypt0 = COSEEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let mut cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let mut unprotected = HeaderMap::new();
         unprotected.insert(IV.into(), CborValue::Integer(42));
         cencrypt0.unprotected = unprotected;
         match cencrypt0.decrypt(key).unwrap_err() {
-            COSEError::SpecificationError(_) => (),
+            CoseError::SpecificationError(_) => (),
             _ => panic!(),
         }
     }
