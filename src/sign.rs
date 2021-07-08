@@ -11,44 +11,9 @@ use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use std::collections::BTreeMap;
 
 use crate::error::COSEError;
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-/// Implementation of header_map, with CborValue keys and CborValue values.
-pub struct HeaderMap(
-    #[serde(deserialize_with = "::serde_with::rust::maps_duplicate_key_is_error::deserialize")]
-    BTreeMap<CborValue, CborValue>,
-);
-
-impl HeaderMap {
-    /// Creates an empty HeaderMap
-    pub fn new() -> Self {
-        HeaderMap(BTreeMap::new())
-    }
-
-    /// Inserts an element into HeaderMap. Both key and value are CborValue.
-    /// If key already has a value, that value is returned.
-    pub fn insert(&mut self, key: CborValue, value: CborValue) -> Option<CborValue> {
-        self.0.insert(key, value)
-    }
-
-    /// Returns the element at key.
-    pub fn get(&self, key: &CborValue) -> Option<&CborValue> {
-        self.0.get(key)
-    }
-
-    /// Returns true if HeaderMap has no elements, false otherwise.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Parses a slice of bytes into a HeaderMap, if possible.
-    pub fn from_bytes(header_map: &[u8]) -> Result<Self, CborError> {
-        serde_cbor::from_slice(&header_map)
-    }
-}
+use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
 /// Values from https://tools.ietf.org/html/rfc8152#section-8.1
 #[derive(Debug, Copy, Clone, Serialize_repr, Deserialize_repr)]
@@ -62,13 +27,13 @@ pub enum SignatureAlgorithm {
     ES512 = -36,
 }
 
-impl Into<HeaderMap> for SignatureAlgorithm {
-    fn into(self) -> HeaderMap {
+impl From<SignatureAlgorithm> for HeaderMap {
+    fn from(sig_alg: SignatureAlgorithm) -> Self {
         // Convenience method for creating the map that would go into the signature structures
         // Can be appended into a larger HeaderMap
         // `1` is the index defined in the spec for Algorithm
         let mut map = HeaderMap::new();
-        map.insert(1.into(), (self as i8).into());
+        map.insert(1.into(), (sig_alg as i8).into());
         map
     }
 }
@@ -130,14 +95,6 @@ pub struct SigStructure(
     /// payload : bstr
     ByteBuf,
 );
-
-fn map_to_empty_or_serialized(map: &HeaderMap) -> Result<Vec<u8>, CborError> {
-    if map.is_empty() {
-        Ok(vec![])
-    } else {
-        Ok(serde_cbor::to_vec(map)?)
-    }
-}
 
 impl SigStructure {
     /// Takes the protected field of the COSE_Sign object and a raw slice of bytes as payload and creates a
@@ -297,16 +254,40 @@ impl COSESign1 {
         unprotected: &HeaderMap,
         key: &PKeyRef<Private>,
     ) -> Result<Self, COSEError> {
+        let ec_key = key.ec_key().map_err(|_| COSEError::UnimplementedError)?;
+
+        let curve_name = ec_key
+            .group()
+            .curve_name()
+            .ok_or(COSEError::UnimplementedError)?;
+
+        let (sig_alg, _, _) = COSESign1::curve_to_parameters(curve_name)?;
+
+        let mut protected = HeaderMap::new();
+        protected.insert(1.into(), (sig_alg as i8).into());
+
+        Self::new_with_protected(payload, &protected, unprotected, key)
+    }
+
+    /// Creates a COSESign1 structure from the given payload and some protected and unprotected data
+    /// in the form of a HeaderMap. Signs the content with the given key using the recommedations
+    /// from the spec and sets the algorithm used into the protected header.
+    pub fn new_with_protected(
+        payload: &[u8],
+        protected: &HeaderMap,
+        unprotected: &HeaderMap,
+        key: &PKeyRef<Private>,
+    ) -> Result<Self, COSEError> {
         let key = key.ec_key().map_err(|_| COSEError::UnimplementedError)?;
+
         let curve_name = key
             .group()
             .curve_name()
             .ok_or(COSEError::UnimplementedError)?;
 
-        let (sig_alg, digest, key_length) = COSESign1::curve_to_parameters(curve_name)?;
+        let (_, digest, key_length) = COSESign1::curve_to_parameters(curve_name)?;
 
         // Create the SigStruct to sign
-        let protected: HeaderMap = sig_alg.into();
         let protected_bytes =
             map_to_empty_or_serialized(&protected).map_err(COSEError::SerializationError)?;
 
@@ -468,9 +449,23 @@ impl COSESign1 {
         let s = BigNum::from_slice(&bytes_s).map_err(COSEError::SignatureError)?;
 
         let sig = EcdsaSig::from_private_components(r, s).map_err(COSEError::SignatureError)?;
-        Ok(sig
-            .verify(&struct_digest, &key)
-            .map_err(COSEError::SignatureError)?)
+        sig.verify(&struct_digest, &key)
+            .map_err(COSEError::SignatureError)
+    }
+
+    /// This gets the `payload` and `protected` data of the document.
+    /// If `key` is provided, it only gets the data if the signature is correctly verified,
+    /// otherwise returns `Err(COSEError::UnverifiedSignature)`.
+    pub fn get_protected_and_payload(
+        &self,
+        key: Option<&PKeyRef<Public>>,
+    ) -> Result<(HeaderMap, Vec<u8>), COSEError> {
+        if key.is_some() && !self.verify_signature(key.unwrap())? {
+            return Err(COSEError::UnverifiedSignature);
+        }
+        let protected: HeaderMap =
+            HeaderMap::from_bytes(&self.0).map_err(COSEError::SerializationError)?;
+        Ok((protected, self.2.to_vec()))
     }
 
     /// This gets the `payload` of the document. If `key` is provided, it only gets the payload
@@ -481,6 +476,11 @@ impl COSESign1 {
             return Err(COSEError::UnverifiedSignature);
         }
         Ok(self.payload.to_vec())
+    }
+
+    /// This gets the `unprotected` headers from the document.
+    pub fn get_unprotected(&self) -> &HeaderMap {
+        &self.1
     }
 }
 
@@ -828,6 +828,11 @@ mod tests {
             cose_doc1.get_payload(None).unwrap(),
             cose_doc2.get_payload(Some(&ec_public)).unwrap()
         );
+        assert!(!cose_doc2.get_unprotected().is_empty(),);
+        assert_eq!(
+            cose_doc2.get_unprotected().get(&CborValue::Integer(4)),
+            Some(&CborValue::Bytes(b"11".to_vec())),
+        );
     }
 
     #[test]
@@ -848,6 +853,39 @@ mod tests {
             cose_doc1.get_payload(None).unwrap(),
             cose_doc2.get_payload(Some(&ec_public)).unwrap()
         );
+    }
+
+    #[test]
+    fn cose_sign1_ec256_text_with_extra_protected() {
+        let (ec_private, ec_public) = generate_ec256_test_key();
+
+        let mut protected = HeaderMap::new();
+        protected.insert(
+            CborValue::Integer(1),
+            (SignatureAlgorithm::ES256 as i8).into(),
+        );
+        protected.insert(CborValue::Integer(15), CborValue::Bytes(b"12".to_vec()));
+
+        let mut unprotected = HeaderMap::new();
+        unprotected.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+        let cose_doc1 =
+            COSESign1::new_with_protected(TEXT, &protected, &unprotected, &ec_private).unwrap();
+        let cose_doc2 = COSESign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
+
+        let (protected, payload) = cose_doc2
+            .get_protected_and_payload(Some(&ec_public))
+            .unwrap();
+
+        assert_eq!(
+            protected.get(&CborValue::Integer(1)),
+            Some(&CborValue::Integer(-7)),
+        );
+        assert_eq!(
+            protected.get(&CborValue::Integer(15)),
+            Some(&CborValue::Bytes(b"12".to_vec())),
+        );
+        assert_eq!(payload, TEXT,);
     }
 
     #[test]
