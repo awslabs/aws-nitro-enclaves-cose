@@ -7,7 +7,7 @@ use serde_cbor::Error as CborError;
 
 #[derive(Debug)]
 /// Aggregation of all error types returned by this library
-pub enum COSEError {
+pub enum CoseError {
     /// Signature could not be performed due to OpenSSL error.
     SignatureError(openssl::error::ErrorStack),
     /// This feature is not yet fully implemented according
@@ -28,27 +28,27 @@ pub enum COSEError {
     EncryptionError(openssl::error::ErrorStack),
 }
 
-impl fmt::Display for COSEError {
+impl fmt::Display for CoseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            COSEError::SignatureError(e) => write!(f, "Signature error: {}", e),
-            COSEError::UnimplementedError => write!(f, "Not implemented"),
-            COSEError::UnsupportedError(e) => write!(f, "Not supported: {}", e),
-            COSEError::UnverifiedSignature => write!(f, "Unverified signature"),
-            COSEError::SpecificationError(e) => write!(f, "Specification error: {}", e),
-            COSEError::SerializationError(e) => write!(f, "Serialization error: {}", e),
-            COSEError::TagError(Some(tag)) => write!(f, "Tag {} was not expected", tag),
-            COSEError::TagError(None) => write!(f, "Expected tag is missing"),
-            COSEError::EncryptionError(e) => write!(f, "Encryption error: {}", e),
+            CoseError::SignatureError(e) => write!(f, "Signature error: {}", e),
+            CoseError::UnimplementedError => write!(f, "Not implemented"),
+            CoseError::UnsupportedError(e) => write!(f, "Not supported: {}", e),
+            CoseError::UnverifiedSignature => write!(f, "Unverified signature"),
+            CoseError::SpecificationError(e) => write!(f, "Specification error: {}", e),
+            CoseError::SerializationError(e) => write!(f, "Serialization error: {}", e),
+            CoseError::TagError(Some(tag)) => write!(f, "Tag {} was not expected", tag),
+            CoseError::TagError(None) => write!(f, "Expected tag is missing"),
+            CoseError::EncryptionError(e) => write!(f, "Encryption error: {}", e),
         }
     }
 }
 
-impl Error for COSEError {
+impl Error for CoseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            COSEError::SignatureError(e) => Some(e),
-            COSEError::SerializationError(e) => Some(e),
+            CoseError::SignatureError(e) => Some(e),
+            CoseError::SerializationError(e) => Some(e),
             _ => None,
         }
     }
