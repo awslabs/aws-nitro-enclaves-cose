@@ -14,6 +14,8 @@ mod openssl;
 #[cfg(feature = "openssl")]
 pub use self::openssl::Openssl;
 
+#[cfg(feature = "key_kms")]
+pub mod kms;
 #[cfg(feature = "key_openssl_pkey")]
 mod openssl_pkey;
 #[cfg(feature = "key_tpm")]
