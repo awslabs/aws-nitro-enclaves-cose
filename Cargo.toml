@@ -16,6 +16,8 @@ serde_bytes = { version = "0.11", features = ["std"] }
 serde_with = { version = "1.5", default_features = false }
 openssl = { version = "0.10", optional = true }
 tss-esapi = { version = "6.1", optional = true }
+aws-sdk-kms = { version = "0.16", optional = true }
+tokio = { version = "1.20", features = ["rt"], optional = true }
 
 [dependencies.serde]
 version = "1.0"
@@ -23,8 +25,10 @@ features = ["derive"]
 
 [dev-dependencies]
 hex = "0.4"
+tokio = { version = "1.20", features = ["macros"] }
 
 [features]
 default = ["key_openssl_pkey"]
 key_openssl_pkey = ["openssl"]
 key_tpm = ["tss-esapi", "openssl"]
+key_kms = ["aws-sdk-kms", "tokio"]

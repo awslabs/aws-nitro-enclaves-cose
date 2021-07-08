@@ -460,7 +460,7 @@ mod tests {
         fn map_serialization() {
             // Empty map
             let map: HeaderMap = HeaderMap::new();
-            assert_eq!(map_to_empty_or_serialized(&map).unwrap(), []);
+            assert_eq!(map_to_empty_or_serialized(&map).unwrap(), [] as [u8; 0]);
 
             // Checks that the body_protected field will be serialized correctly
             let map: HeaderMap = SignatureAlgorithm::ES256.into();
@@ -1286,6 +1286,151 @@ mod tests {
                     panic!("Unexpected error: {:?}", e)
                 }
             }
+        }
+    }
+
+    #[cfg(feature = "key_kms")]
+    mod kms {
+        use std::str::FromStr;
+
+        use super::TEXT;
+        use crate::{crypto::kms::KmsKey, sign::*};
+
+        use std::env;
+
+        #[tokio::test]
+        async fn cose_sign_kms() {
+            let config = aws_config::from_env().load().await;
+            let kms_client = aws_sdk_kms::Client::new(&config);
+
+            tokio::task::spawn_blocking(|| {
+                let key_id =
+                    env::var("AWS_KMS_TEST_KEY_ARN").expect("Please set AWS_KMS_TEST_KEY_ARN");
+
+                let sig_alg = env::var("TEST_KEY_SIG_ALG").expect("Please set TEST_KEY_SIG_ALG");
+                let sig_alg =
+                    SignatureAlgorithm::from_str(&sig_alg).expect("Invalid TEST_KEY_SIG_ALG");
+
+                let kms_key =
+                    KmsKey::new(kms_client, key_id, sig_alg).expect("Error building kms_key");
+
+                let mut map = HeaderMap::new();
+                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                let cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+                let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+
+                // Tag 6.18 should be present
+                assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+                let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+                assert_eq!(
+                    cose_doc1.get_payload(None).unwrap(),
+                    cose_doc2.get_payload(Some(&kms_key)).unwrap()
+                );
+            })
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn cose_sign_kms_invalid_signature() {
+            let config = aws_config::from_env().load().await;
+            let kms_client = aws_sdk_kms::Client::new(&config);
+
+            tokio::task::spawn_blocking(|| {
+                let key_id =
+                    env::var("AWS_KMS_TEST_KEY_ARN").expect("Please set AWS_KMS_TEST_KEY_ARN");
+
+                let sig_alg = env::var("TEST_KEY_SIG_ALG").expect("Please set TEST_KEY_SIG_ALG");
+                let sig_alg =
+                    SignatureAlgorithm::from_str(&sig_alg).expect("Invalid TEST_KEY_SIG_ALG");
+                let kms_key =
+                    KmsKey::new(kms_client, key_id, sig_alg).expect("Error building kms_key");
+
+                let mut map = HeaderMap::new();
+                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                let mut cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+
+                // Mangle the signature
+                cose_doc1.signature[0] ^= 0xff;
+
+                let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+                let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+                match cose_doc2.get_payload(Some(&kms_key)) {
+                    Ok(_) => panic!("Did not fail"),
+                    Err(CoseError::UnverifiedSignature) => {}
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e)
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        #[cfg(feature = "key_openssl_pkey")]
+        #[tokio::test]
+        async fn cose_sign_kms_public_key() {
+            let config = aws_config::from_env().load().await;
+            let kms_client = aws_sdk_kms::Client::new(&config);
+
+            let key_id = env::var("AWS_KMS_TEST_KEY_ARN").expect("Please set AWS_KMS_TEST_KEY_ARN");
+
+            tokio::task::spawn_blocking(|| {
+                let kms_key = KmsKey::new_with_public_key(kms_client, key_id, None)
+                    .expect("Error building kms_key");
+
+                let mut map = HeaderMap::new();
+                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                let cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+                let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+
+                // Tag 6.18 should be present
+                assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+                let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+                assert_eq!(
+                    cose_doc1.get_payload(None).unwrap(),
+                    cose_doc2.get_payload(Some(&kms_key)).unwrap()
+                );
+            })
+            .await
+            .unwrap();
+        }
+
+        #[cfg(feature = "key_openssl_pkey")]
+        #[tokio::test]
+        async fn cose_sign_kms_public_key_invalid_signature() {
+            let config = aws_config::from_env().load().await;
+            let kms_client = aws_sdk_kms::Client::new(&config);
+
+            let key_id = env::var("AWS_KMS_TEST_KEY_ARN").expect("Please set AWS_KMS_TEST_KEY_ARN");
+
+            tokio::task::spawn_blocking(|| {
+                let kms_key = KmsKey::new_with_public_key(kms_client, key_id, None)
+                    .expect("Error building kms_key");
+
+                let mut map = HeaderMap::new();
+                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                let mut cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+
+                // Mangle the signature
+                cose_doc1.signature[0] ^= 0xff;
+
+                let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+                let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+                match cose_doc2.get_payload(Some(&kms_key)) {
+                    Ok(_) => panic!("Did not fail"),
+                    Err(CoseError::UnverifiedSignature) => {}
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e)
+                    }
+                }
+            })
+            .await
+            .unwrap();
         }
     }
 }
