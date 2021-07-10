@@ -5,10 +5,14 @@
 //! serde and serde_cbor as an encoding layer and OpenSSL as the base
 //! crypto library.
 //!
-//! Currently only COSE Sign1 is implemented.
+//! Currently only COSE Sign1 and COSE Encrypt0 are implemented.
 
+pub mod encrypt;
 pub mod error;
+pub mod header_map;
 pub mod sign;
 
+pub use crate::encrypt::CipherConfiguration;
+pub use crate::encrypt::CoseEncrypt0;
 #[doc(inline)]
-pub use crate::sign::COSESign1;
+pub use crate::sign::CoseSign1;
