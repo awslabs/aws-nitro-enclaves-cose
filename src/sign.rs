@@ -6,7 +6,7 @@ use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
 use openssl::pkey::PKeyRef;
 use openssl::pkey::{Private, Public};
-use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
+use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
@@ -248,9 +248,11 @@ impl<'de> Deserialize<'de> for CoseSign1 {
                     Some(v) => v,
                     None => return Err(A::Error::missing_field("protected")),
                 };
-                let header_map = match seq.next_element()? {
+
+                let unprotected = match seq.next_element()? {
                     Some(v) => v,
-                    None => return Err(A::Error::missing_field("header_map")),
+                    None => return Err(A::Error::missing_field("unprotected")),
+
                 };
                 let payload = match seq.next_element()? {
                     Some(v) => v,
@@ -260,7 +262,13 @@ impl<'de> Deserialize<'de> for CoseSign1 {
                     Some(v) => v,
                     None => return Err(A::Error::missing_field("signature")),
                 };
-                Ok(CoseSign1(protected, header_map, payload, signature))
+
+                Ok(CoseSign1 {
+                    protected,
+                    unprotected,
+                    payload,
+                    signature,
+                })
             }
 
             fn visit_newtype_struct<D>(self, deserializer: D) -> Result<CoseSign1, D::Error>
@@ -956,6 +964,24 @@ mod tests {
             Some(&CborValue::Bytes(b"12".to_vec())),
         );
         assert_eq!(payload, TEXT,);
+    }
+
+    #[test]
+    fn cose_sign1_ec256_text_tagged_serde() {
+        let (ec_private, ec_public) = generate_ec256_test_key();
+        let mut map = HeaderMap::new();
+        map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+        let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+        let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+        // Tag 6.18 should be present
+        assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+        let cose_doc2: CoseSign1 = serde_cbor::from_slice(&tagged_bytes).unwrap();
+
+        assert_eq!(
+            cose_doc1.get_payload(None).unwrap(),
+            cose_doc2.get_payload(Some(&ec_public)).unwrap()
+        );
     }
 
     #[test]
