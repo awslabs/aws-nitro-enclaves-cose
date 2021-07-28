@@ -1,6 +1,13 @@
 
 # Changelog
 
+## 0.3.0
+
+* **Breaking change**: Use upper case acronyms as advised by clippy
+* **New Feature**: COSE encryption is now available. Thank you @runcom for the patches.
+* Allow access to CoseSign1 headers, to allow algorithms to use read and set them. Thank you @puiterwijk.
+* Minor fixes and version bumps.
+
 ## 0.2.0
 
 * Bump `serde_with` version.
