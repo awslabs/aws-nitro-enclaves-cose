@@ -357,7 +357,7 @@ impl CoseSign1 {
 
         // Create the SigStruct to sign
         let protected_bytes =
-            map_to_empty_or_serialized(&protected).map_err(CoseError::SerializationError)?;
+            map_to_empty_or_serialized(protected).map_err(CoseError::SerializationError)?;
 
         let sig_structure = SigStructure::new_sign1(&protected_bytes, payload)
             .map_err(CoseError::SerializationError)?;
