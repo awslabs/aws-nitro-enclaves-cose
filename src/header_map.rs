@@ -36,7 +36,7 @@ impl HeaderMap {
 
     /// Parses a slice of bytes into a HeaderMap, if possible.
     pub fn from_bytes(header_map: &[u8]) -> Result<Self, CborError> {
-        serde_cbor::from_slice(&header_map)
+        serde_cbor::from_slice(header_map)
     }
 }
 

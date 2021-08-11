@@ -59,8 +59,8 @@ where
         // Recover the R and S factors from the signature contained in the object
         let (bytes_r, bytes_s) = signature.split_at(key_length);
 
-        let r = BigNum::from_slice(&bytes_r).map_err(CoseError::SignatureError)?;
-        let s = BigNum::from_slice(&bytes_s).map_err(CoseError::SignatureError)?;
+        let r = BigNum::from_slice(bytes_r).map_err(CoseError::SignatureError)?;
+        let s = BigNum::from_slice(bytes_s).map_err(CoseError::SignatureError)?;
 
         let sig = EcdsaSig::from_private_components(r, s).map_err(CoseError::SignatureError)?;
         sig.verify(digest, &key).map_err(CoseError::SignatureError)
