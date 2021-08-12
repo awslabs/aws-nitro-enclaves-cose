@@ -5,11 +5,13 @@ use std::fmt;
 
 use serde_cbor::Error as CborError;
 
+use crate::crypto::CryptoError;
+
 #[derive(Debug)]
 /// Aggregation of all error types returned by this library
 pub enum CoseError {
-    /// Signature could not be performed due to OpenSSL error.
-    SignatureError(openssl::error::ErrorStack),
+    /// The crypto implementation returned an error.
+    CryptoError(CryptoError),
     /// This feature is not yet fully implemented according
     /// to the spec.
     UnimplementedError,
@@ -25,13 +27,16 @@ pub enum CoseError {
     /// Tag is missing or incorrect.
     TagError(Option<u64>),
     /// Encryption could not be performed due to OpenSSL error.
-    EncryptionError(openssl::error::ErrorStack),
+    EncryptionError(CryptoError),
+    /// OpenSSL error
+    #[cfg(feature = "key_openssl_pkey")]
+    OpenSSLError(openssl::error::ErrorStack),
 }
 
 impl fmt::Display for CoseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CoseError::SignatureError(e) => write!(f, "Signature error: {}", e),
+            CoseError::CryptoError(e) => write!(f, "Crypto error: {}", e),
             CoseError::UnimplementedError => write!(f, "Not implemented"),
             CoseError::UnsupportedError(e) => write!(f, "Not supported: {}", e),
             CoseError::UnverifiedSignature => write!(f, "Unverified signature"),
@@ -40,6 +45,8 @@ impl fmt::Display for CoseError {
             CoseError::TagError(Some(tag)) => write!(f, "Tag {} was not expected", tag),
             CoseError::TagError(None) => write!(f, "Expected tag is missing"),
             CoseError::EncryptionError(e) => write!(f, "Encryption error: {}", e),
+            #[cfg(feature = "key_openssl_pkey")]
+            CoseError::OpenSSLError(e) => write!(f, "OpenSSL error: {}", e),
         }
     }
 }
@@ -47,8 +54,10 @@ impl fmt::Display for CoseError {
 impl Error for CoseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            CoseError::SignatureError(e) => Some(e),
+            CoseError::CryptoError(e) => Some(e),
             CoseError::SerializationError(e) => Some(e),
+            #[cfg(feature = "key_openssl_pkey")]
+            CoseError::OpenSSLError(e) => Some(e),
             _ => None,
         }
     }

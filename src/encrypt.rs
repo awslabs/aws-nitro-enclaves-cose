@@ -1,7 +1,5 @@
 //! COSE Encryption
 
-use openssl::rand::rand_bytes;
-use openssl::symm::{decrypt_aead, encrypt_aead, Cipher};
 use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
@@ -32,7 +30,8 @@ impl CipherConfiguration {
     }
 }
 
-enum COSEAlgorithm {
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum COSEAlgorithm {
     /// AES-GCM mode w/ 128-bit key, 128-bit tag
     AesGcm96_128_128,
     /// AES-GCM mode w/ 192-bit key, 128-bit tag
@@ -42,6 +41,16 @@ enum COSEAlgorithm {
 }
 
 impl COSEAlgorithm {
+    // Returns the tag size for the given algorithm in bytes.
+    #[allow(unused)]
+    pub(crate) fn tag_size(&self) -> usize {
+        match self {
+            COSEAlgorithm::AesGcm96_128_128 => 16,
+            COSEAlgorithm::AesGcm96_128_192 => 16,
+            COSEAlgorithm::AesGcm96_128_256 => 16,
+        }
+    }
+
     fn value(&self) -> usize {
         match self {
             COSEAlgorithm::AesGcm96_128_128 => 1,
@@ -57,23 +66,6 @@ impl COSEAlgorithm {
             3 => COSEAlgorithm::AesGcm96_128_256,
             _ => return None,
         })
-    }
-
-    // Returns the tag size for the given algorithm in bytes.
-    fn tag_size(&self) -> usize {
-        match self {
-            COSEAlgorithm::AesGcm96_128_128 => 16,
-            COSEAlgorithm::AesGcm96_128_192 => 16,
-            COSEAlgorithm::AesGcm96_128_256 => 16,
-        }
-    }
-
-    fn openssl_cipher(&self) -> Cipher {
-        match self {
-            COSEAlgorithm::AesGcm96_128_128 => Cipher::aes_128_gcm(),
-            COSEAlgorithm::AesGcm96_128_192 => Cipher::aes_192_gcm(),
-            COSEAlgorithm::AesGcm96_128_256 => Cipher::aes_256_gcm(),
-        }
     }
 }
 
@@ -234,15 +226,10 @@ impl CoseEncrypt0 {
                 ))
             }
         };
-        let cipher = cose_alg.openssl_cipher();
-        let mut iv = vec![0; cipher.iv_len().unwrap()];
-        rand_bytes(&mut iv).unwrap();
 
         let cose_alg_value = cose_alg.value();
         let mut protected = HeaderMap::new();
         protected.insert(KTY.into(), CborValue::Integer(cose_alg_value as i128));
-        let mut unprotected = HeaderMap::new();
-        unprotected.insert(IV.into(), CborValue::Bytes(iv.to_owned()));
 
         let protected_bytes =
             map_to_empty_or_serialized(&protected).map_err(CoseError::SerializationError)?;
@@ -250,20 +237,18 @@ impl CoseEncrypt0 {
         let enc_structure =
             EncStructure::new_encrypt0(&protected_bytes).map_err(CoseError::SerializationError)?;
 
-        let mut tag = vec![0; cose_alg.tag_size()];
-        let mut ciphertext = encrypt_aead(
-            cipher,
-            key,
-            Some(&iv[..]),
-            &enc_structure
-                .as_bytes()
-                .map_err(CoseError::SerializationError)?,
-            payload,
-            &mut tag,
-        )
-        .map_err(CoseError::EncryptionError)?;
+        let aad = &enc_structure
+            .as_bytes()
+            .map_err(CoseError::SerializationError)?;
 
-        ciphertext.append(&mut tag);
+        let (ciphertext, iv) = cose_alg
+            .encrypt(key, aad, payload)
+            .map_err(CoseError::EncryptionError)?;
+
+        let mut unprotected = HeaderMap::new();
+        if let Some(iv) = iv {
+            unprotected.insert(IV.into(), CborValue::Bytes(iv));
+        }
 
         Ok(CoseEncrypt0 {
             protected: ByteBuf::from(protected_bytes),
@@ -313,21 +298,13 @@ impl CoseEncrypt0 {
             }
         };
 
-        let (ciphertext, tag) = self
-            .ciphertext
-            .split_at(self.ciphertext.len() - cose_alg.tag_size());
+        let aad = &enc_structure
+            .as_bytes()
+            .map_err(CoseError::SerializationError)?;
 
-        let payload = decrypt_aead(
-            cose_alg.openssl_cipher(),
-            key,
-            Some(&iv),
-            &enc_structure
-                .as_bytes()
-                .map_err(CoseError::SerializationError)?,
-            ciphertext,
-            &tag,
-        )
-        .map_err(CoseError::EncryptionError)?;
+        let payload = cose_alg
+            .decrypt(key, aad, Some(iv), &self.ciphertext)
+            .map_err(CoseError::EncryptionError)?;
 
         Ok((protected, &self.unprotected, payload))
     }
@@ -413,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_unsupported_openssl_cipher() {
+    fn test_decrypt_unsupported_cipher() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
         let mut cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();

@@ -14,17 +14,22 @@ env:
 
 jobs:
     test:
-        name: Test on rust ${{matrix.rust}}
+        name: Test on rust ${{matrix.rust}} (crypto ${{ matrix.crypto_feature }}, keys ${{ matrix.key_feature_set }})
         runs-on: ubuntu-latest
         strategy:
             matrix:
-                rust: [1.40.0, stable, nightly]
+                rust: [1.46.0, stable, nightly]
+                crypto_feature:
+                  - crypto_openssl
+                  - crypto_ring
+                key_feature_set:
+                  - key_openssl_pkey
         steps:
         - uses: actions/checkout@v2
         - uses: dtolnay/rust-toolchain@master
           with:
               toolchain: ${{matrix.rust}}
-        - run: cargo test --all
+        - run: cargo test --all --no-default-features --features ${{ matrix.crypto_feature }},${{ matrix.key_feature_set }}
 
     clippy:
         name: Clippy
