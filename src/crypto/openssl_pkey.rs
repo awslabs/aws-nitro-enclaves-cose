@@ -3,21 +3,48 @@
 use openssl::{
     bn::BigNum,
     ecdsa::EcdsaSig,
-    hash::MessageDigest,
+    nid::Nid,
     pkey::{HasPrivate, HasPublic, PKey, PKeyRef},
 };
 
 use crate::{
-    crypto::{ec_curve_to_parameters, SigningPrivateKey, SigningPublicKey},
+    crypto::{HashFunction, SigningPrivateKey, SigningPublicKey},
     error::CoseError,
     sign::SignatureAlgorithm,
 };
+
+/// Follows the recommandations put in place by the RFC and doesn't deal with potential
+/// mismatches: https://tools.ietf.org/html/rfc8152#section-8.1.
+pub fn ec_curve_to_parameters(
+    curve_name: Nid,
+) -> Result<(SignatureAlgorithm, HashFunction, usize), CoseError> {
+    let sig_alg = match curve_name {
+        // Recommended to use with SHA256
+        Nid::X9_62_PRIME256V1 => SignatureAlgorithm::ES256,
+        // Recommended to use with SHA384
+        Nid::SECP384R1 => SignatureAlgorithm::ES384,
+        // Recommended to use with SHA512
+        Nid::SECP521R1 => SignatureAlgorithm::ES512,
+        _ => {
+            return Err(CoseError::UnsupportedError(format!(
+                "Curve name {:?} is not supported",
+                curve_name
+            )))
+        }
+    };
+
+    Ok((
+        sig_alg,
+        sig_alg.suggested_hash_function(),
+        sig_alg.key_length(),
+    ))
+}
 
 impl<T> SigningPublicKey for PKey<T>
 where
     T: HasPublic,
 {
-    fn get_parameters(&self) -> Result<(SignatureAlgorithm, MessageDigest), CoseError> {
+    fn get_parameters(&self) -> Result<(SignatureAlgorithm, HashFunction), CoseError> {
         self.as_ref().get_parameters()
     }
 
@@ -30,7 +57,7 @@ impl<T> SigningPublicKey for PKeyRef<T>
 where
     T: HasPublic,
 {
-    fn get_parameters(&self) -> Result<(SignatureAlgorithm, MessageDigest), CoseError> {
+    fn get_parameters(&self) -> Result<(SignatureAlgorithm, HashFunction), CoseError> {
         let curve_name = self
             .ec_key()
             .map_err(|_| CoseError::UnsupportedError("Non-EC keys are not supported".to_string()))?
@@ -59,11 +86,11 @@ where
         // Recover the R and S factors from the signature contained in the object
         let (bytes_r, bytes_s) = signature.split_at(key_length);
 
-        let r = BigNum::from_slice(bytes_r).map_err(CoseError::SignatureError)?;
-        let s = BigNum::from_slice(bytes_s).map_err(CoseError::SignatureError)?;
+        let r = BigNum::from_slice(bytes_r).map_err(CoseError::OpenSSLError)?;
+        let s = BigNum::from_slice(bytes_s).map_err(CoseError::OpenSSLError)?;
 
-        let sig = EcdsaSig::from_private_components(r, s).map_err(CoseError::SignatureError)?;
-        sig.verify(digest, &key).map_err(CoseError::SignatureError)
+        let sig = EcdsaSig::from_private_components(r, s).map_err(CoseError::OpenSSLError)?;
+        sig.verify(digest, &key).map_err(CoseError::OpenSSLError)
     }
 }
 
@@ -96,7 +123,7 @@ where
         // The Signer interface doesn't provide this, so this will use EcdsaSig interface instead
         // and concatenate R and S.
         // See https://tools.ietf.org/html/rfc8017#section-4.1 for details.
-        let signature = EcdsaSig::sign(digest, &key).map_err(CoseError::SignatureError)?;
+        let signature = EcdsaSig::sign(digest, &key).map_err(CoseError::OpenSSLError)?;
         let bytes_r = signature.r().to_vec();
         let bytes_s = signature.s().to_vec();
 

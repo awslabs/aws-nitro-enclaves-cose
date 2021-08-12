@@ -2,14 +2,13 @@
 
 use std::str::FromStr;
 
-use openssl::hash::{hash, MessageDigest};
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-use crate::crypto::{SigningPrivateKey, SigningPublicKey};
+use crate::crypto::{hash, HashFunction, SigningPrivateKey, SigningPublicKey};
 use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
@@ -35,11 +34,11 @@ impl SignatureAlgorithm {
         }
     }
 
-    pub(crate) fn suggested_message_digest(&self) -> MessageDigest {
+    pub(crate) fn suggested_hash_function(&self) -> HashFunction {
         match self {
-            SignatureAlgorithm::ES256 => MessageDigest::sha256(),
-            SignatureAlgorithm::ES384 => MessageDigest::sha384(),
-            SignatureAlgorithm::ES512 => MessageDigest::sha512(),
+            SignatureAlgorithm::ES256 => HashFunction::Sha256,
+            SignatureAlgorithm::ES384 => HashFunction::Sha384,
+            SignatureAlgorithm::ES512 => HashFunction::Sha512,
         }
     }
 }
@@ -368,7 +367,7 @@ impl CoseSign1 {
                 .as_bytes()
                 .map_err(CoseError::SerializationError)?,
         )
-        .map_err(CoseError::SignatureError)?;
+        .map_err(CoseError::CryptoError)?;
 
         let signature = key.sign(struct_digest.as_ref())?;
 
@@ -478,7 +477,7 @@ impl CoseSign1 {
                 .as_bytes()
                 .map_err(CoseError::SerializationError)?,
         )
-        .map_err(CoseError::SignatureError)?;
+        .map_err(CoseError::CryptoError)?;
 
         key.verify(struct_digest.as_ref(), &self.signature)
     }

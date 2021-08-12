@@ -14,12 +14,13 @@ serde_cbor = { version="0.11", features = ["tags"] }
 serde_repr = "0.1"
 serde_bytes = "0.11"
 serde_with = "1.5"
-openssl = "0.10"
+openssl = { version = "0.10", optional = true }
 
 [dependencies.serde]
 version = "1.0"
 features = ["derive"]
 
 [features]
-default = ["key_openssl_pkey"]
-key_openssl_pkey = []
+default = ["crypto_openssl", "key_openssl_pkey"]
+key_openssl_pkey = ["openssl"]
+crypto_openssl = ["openssl"]
