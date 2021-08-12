@@ -25,6 +25,7 @@ pub enum SignatureAlgorithm {
 }
 
 impl SignatureAlgorithm {
+    #[allow(unused)]
     pub(crate) fn key_length(&self) -> usize {
         match self {
             SignatureAlgorithm::ES256 => 32,
@@ -34,6 +35,7 @@ impl SignatureAlgorithm {
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn suggested_hash_function(&self) -> HashFunction {
         match self {
             SignatureAlgorithm::ES256 => HashFunction::Sha256,

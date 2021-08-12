@@ -19,7 +19,12 @@ mod crypto_openssl;
 #[cfg(feature = "crypto_openssl")]
 pub use crypto_openssl::*;
 
-#[cfg(not(any(feature = "crypto_openssl")))]
+#[cfg(feature = "crypto_ring")]
+mod crypto_ring;
+#[cfg(feature = "crypto_ring")]
+pub use crypto_ring::*;
+
+#[cfg(not(any(feature = "crypto_openssl", feature = "crypto_ring")))]
 compile_error!("Please enable a crypto implementation");
 
 // Import the different shipped signing crypto

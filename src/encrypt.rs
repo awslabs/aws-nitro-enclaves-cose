@@ -42,6 +42,7 @@ pub(crate) enum COSEAlgorithm {
 
 impl COSEAlgorithm {
     // Returns the tag size for the given algorithm in bytes.
+    #[allow(unused)]
     pub(crate) fn tag_size(&self) -> usize {
         match self {
             COSEAlgorithm::AesGcm96_128_128 => 16,
