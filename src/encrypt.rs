@@ -320,12 +320,12 @@ impl CoseEncrypt0 {
         let payload = decrypt_aead(
             cose_alg.openssl_cipher(),
             key,
-            Some(&iv),
+            Some(iv),
             &enc_structure
                 .as_bytes()
                 .map_err(CoseError::SerializationError)?,
             ciphertext,
-            &tag,
+            tag,
         )
         .map_err(CoseError::EncryptionError)?;
 
