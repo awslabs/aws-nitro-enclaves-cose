@@ -100,22 +100,6 @@ where
         let bytes_r = signature.r().to_vec();
         let bytes_s = signature.s().to_vec();
 
-        // These should *never* exceed ceiling(key_length / 8)
-        assert!(bytes_r.len() <= key_length);
-        assert!(bytes_s.len() <= key_length);
-
-        let mut signature_bytes = vec![0u8; key_length * 2];
-
-        // This is big-endian encoding so padding might be added at the start if the factor is
-        // too short.
-        let offset_copy = key_length - bytes_r.len();
-        signature_bytes[offset_copy..offset_copy + bytes_r.len()].copy_from_slice(&bytes_r);
-
-        // This is big-endian encoding so padding might be added at the start if the factor is
-        // too short.
-        let offset_copy = key_length - bytes_s.len() + key_length;
-        signature_bytes[offset_copy..offset_copy + bytes_s.len()].copy_from_slice(&bytes_s);
-
-        Ok(signature_bytes)
+        Ok(super::merge_ec_signature(&bytes_r, &bytes_s, key_length))
     }
 }

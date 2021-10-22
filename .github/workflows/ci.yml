@@ -26,6 +26,39 @@ jobs:
               toolchain: ${{matrix.rust}}
         - run: cargo test --all
 
+    test_fedora:
+        name: Test on Fedora
+        runs-on: ubuntu-latest
+        container: fedora:latest
+        steps:
+        - uses: actions/checkout@v2
+        - name: Install dependencies
+          run: |
+              dnf install -y \
+                  tpm2-tss-devel \
+                  swtpm swtpm-tools \
+                  rust cargo clippy
+        - name: Start swtpm
+          run: |
+              mkdir /tmp/tpmdir
+              swtpm_setup --tpm2 \
+                  --tpmstate /tmp/tpmdir \
+                  --createek --decryption --create-ek-cert \
+                  --create-platform-cert \
+                  --display
+              swtpm socket --tpm2 \
+                  --tpmstate dir=/tmp/tpmdir \
+                  --flags startup-clear \
+                  --ctrl type=tcp,port=2322 \
+                  --server type=tcp,port=2321 \
+                  --daemon
+        - name: Run tests
+          run: |
+              TCTI=swtpm: cargo test --features key_tpm,key_openssl_pkey
+        - name: Run clippy
+          run: |
+              cargo clippy --features key_tpm,key_openssl_pkey --all
+
     clippy:
         name: Clippy
         runs-on: ubuntu-latest

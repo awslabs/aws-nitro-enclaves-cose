@@ -6,6 +6,8 @@ use crate::{error::CoseError, sign::SignatureAlgorithm};
 
 #[cfg(feature = "key_openssl_pkey")]
 mod openssl_pkey;
+#[cfg(feature = "key_tpm")]
+pub mod tpm;
 
 /// A public key that can verify an existing signature
 pub trait SigningPublicKey {
@@ -43,6 +45,25 @@ pub fn ec_curve_to_parameters(
         sig_alg.suggested_message_digest(),
         sig_alg.key_length(),
     ))
+}
+
+fn merge_ec_signature(bytes_r: &[u8], bytes_s: &[u8], key_length: usize) -> Vec<u8> {
+    assert!(bytes_r.len() <= key_length);
+    assert!(bytes_s.len() <= key_length);
+
+    let mut signature_bytes = vec![0u8; key_length * 2];
+
+    // This is big-endian encoding so padding might be added at the start if the factor is
+    // too short.
+    let offset_copy = key_length - bytes_r.len();
+    signature_bytes[offset_copy..offset_copy + bytes_r.len()].copy_from_slice(bytes_r);
+
+    // This is big-endian encoding so padding might be added at the start if the factor is
+    // too short.
+    let offset_copy = key_length - bytes_s.len() + key_length;
+    signature_bytes[offset_copy..offset_copy + bytes_s.len()].copy_from_slice(bytes_s);
+
+    signature_bytes
 }
 
 /// A private key that can produce new signatures
