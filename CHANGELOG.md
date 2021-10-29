@@ -1,6 +1,10 @@
 
 # Changelog
 
+## 0.4.0
+* Abstract signing support: provide traits to abstract private and public keys.
+* Support signing with a TPM-backed private key via the `key_tpm` feature.
+
 ## 0.3.0
 
 * **Breaking change**: Use upper case acronyms as advised by clippy
