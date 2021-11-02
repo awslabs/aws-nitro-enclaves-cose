@@ -1143,6 +1143,58 @@ mod tests {
                 _ => panic!(),
             }
         }
+
+        // Key with kid "11" from RFC8152 appendix C, section C.7.1
+        fn rfc_8152_key_kid_11() -> PKey<Public> {
+            /*
+            {
+                -1:1,  // NIST P-256
+                -2:h'bac5b11cad8f99f9c72b05cf4b9e26d244dc189f745228255a219a86d6a09eff',  // X
+                -3:h'20138bf82dc1b6d562be0fa54ab7804a3a64b6d72ccfed6b6fb6ed28bbfc117e',  // Y
+                1:2,  // EC2 encoding
+                2:'11'
+            },
+            */
+
+            let alg =
+                openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+            let x = openssl::bn::BigNum::from_hex_str(
+                "bac5b11cad8f99f9c72b05cf4b9e26d244dc189f745228255a219a86d6a09eff",
+            )
+            .unwrap();
+            let y = openssl::bn::BigNum::from_hex_str(
+                "20138bf82dc1b6d562be0fa54ab7804a3a64b6d72ccfed6b6fb6ed28bbfc117e",
+            )
+            .unwrap();
+
+            let ec_public =
+                openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
+
+            PKey::from_ec_key(ec_public).unwrap()
+        }
+
+        #[test]
+        fn rfc_8152_c_2_1_sign1_validate() {
+            let payload = "This is the content.".as_bytes().to_vec();
+
+            let signature = "8eb33e4ca31d1c465ab05aac34cc6b23d58fef5c083106c4d25a91aef0b0117e2af9a291aa32e14ab834dc56e\
+            d2a223444547e01f11d3b0916e5a4c345cacb36";
+
+            let mut unprotected = HeaderMap::new();
+            unprotected.insert(4.into(), "11".as_bytes().to_vec().into());
+
+            // This is directly from the RFC, section C.2.1
+            let cose_doc = CoseSign1 {
+                payload: ByteBuf::from(payload.clone()),
+                protected: ByteBuf::from(hex::decode("a10126").unwrap()),
+                unprotected,
+                signature: ByteBuf::from(hex::decode(signature).unwrap()),
+            };
+
+            let ec_public = rfc_8152_key_kid_11();
+
+            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), payload);
+        }
     }
 
     #[cfg(feature = "key_tpm")]
