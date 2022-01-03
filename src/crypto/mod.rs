@@ -1,13 +1,61 @@
 //! (Signing) cryptography abstraction
 
-use openssl::{hash::MessageDigest, nid::Nid};
+use ::openssl::{hash::MessageDigest, nid::Nid};
 
-use crate::{error::CoseError, sign::SignatureAlgorithm};
+use crate::encrypt::COSEAlgorithm;
+use crate::error::CoseError;
+use crate::sign::SignatureAlgorithm;
+
+mod openssl;
+pub use self::openssl::OpenSSL;
 
 #[cfg(feature = "key_openssl_pkey")]
 mod openssl_pkey;
 #[cfg(feature = "key_tpm")]
 pub mod tpm;
+
+/// A trait exposing various aead encryption algorithms.
+pub trait Encryption {
+    /// Fill the provided `buff` with cryptographic random values.
+    fn rand_bytes(buff: &mut [u8]) -> Result<(), CoseError>;
+
+    /// Encryption for AEAD ciphers such as AES GCM.
+    ///
+    /// Additional Authenticated Data (AEAD) can be provided in the `aad` field, and the authentication tag
+    /// will be copied into the `tag` field.
+    ///
+    /// The size of the `tag` buffer indicates the required size of the tag. While some ciphers support
+    /// a range of tag sizes, it is recommended to pick the maximum size. For AES GCM, this is 16 bytes,
+    /// for example.
+    fn encrypt_aead(
+        algo: EncryptionAlgorithm,
+        key: &[u8],
+        iv: Option<&[u8]>,
+        aad: &[u8],
+        data: &[u8],
+        tag: &mut [u8],
+    ) -> Result<Vec<u8>, CoseError>;
+}
+
+/// Cryptographic algorithm that should be used with the `Encryption`/`Decryption` traits
+pub enum EncryptionAlgorithm {
+    /// 128-bit AES in Galois/Counter Mode
+    Aes128Gcm,
+    /// 192-bit AES in Galois/Counter Mode
+    Aes192Gcm,
+    /// 256-bit AES in Galois/Counter Mode
+    Aes256Gcm,
+}
+
+impl From<COSEAlgorithm> for EncryptionAlgorithm {
+    fn from(algo: COSEAlgorithm) -> EncryptionAlgorithm {
+        match algo {
+            COSEAlgorithm::AesGcm96_128_128 => EncryptionAlgorithm::Aes128Gcm,
+            COSEAlgorithm::AesGcm96_128_192 => EncryptionAlgorithm::Aes192Gcm,
+            COSEAlgorithm::AesGcm96_128_256 => EncryptionAlgorithm::Aes256Gcm,
+        }
+    }
+}
 
 /// A public key that can verify an existing signature
 pub trait SigningPublicKey {

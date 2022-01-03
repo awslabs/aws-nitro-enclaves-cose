@@ -1,12 +1,11 @@
 //! COSE Encryption
-
-use openssl::rand::rand_bytes;
-use openssl::symm::{decrypt_aead, encrypt_aead, Cipher};
+use openssl::symm::{decrypt_aead, Cipher};
 use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 
+use crate::crypto::Encryption;
 use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
@@ -32,7 +31,7 @@ impl CipherConfiguration {
     }
 }
 
-enum COSEAlgorithm {
+pub(crate) enum COSEAlgorithm {
     /// AES-GCM mode w/ 128-bit key, 128-bit tag
     AesGcm96_128_128,
     /// AES-GCM mode w/ 192-bit key, 128-bit tag
@@ -65,6 +64,14 @@ impl COSEAlgorithm {
             COSEAlgorithm::AesGcm96_128_128 => 16,
             COSEAlgorithm::AesGcm96_128_192 => 16,
             COSEAlgorithm::AesGcm96_128_256 => 16,
+        }
+    }
+
+    fn iv_len(&self) -> Option<usize> {
+        match self {
+            COSEAlgorithm::AesGcm96_128_128 => Some(12),
+            COSEAlgorithm::AesGcm96_128_192 => Some(12),
+            COSEAlgorithm::AesGcm96_128_256 => Some(12),
         }
     }
 
@@ -221,7 +228,7 @@ impl Serialize for CoseEncrypt0 {
 impl CoseEncrypt0 {
     /// Creates a new instance of the COSE_Encrypt0 structure and encrypts the provided payload.
     /// https://datatracker.ietf.org/doc/html/rfc8152#section-5.3
-    pub fn new(
+    pub fn new<C: Encryption>(
         payload: &[u8],
         cipher_config: CipherConfiguration,
         key: &[u8],
@@ -234,9 +241,8 @@ impl CoseEncrypt0 {
                 ))
             }
         };
-        let cipher = cose_alg.openssl_cipher();
-        let mut iv = vec![0; cipher.iv_len().unwrap()];
-        rand_bytes(&mut iv).unwrap();
+        let mut iv = vec![0; cose_alg.iv_len().unwrap()];
+        C::rand_bytes(&mut iv)?;
 
         let cose_alg_value = cose_alg.value();
         let mut protected = HeaderMap::new();
@@ -251,8 +257,8 @@ impl CoseEncrypt0 {
             EncStructure::new_encrypt0(&protected_bytes).map_err(CoseError::SerializationError)?;
 
         let mut tag = vec![0; cose_alg.tag_size()];
-        let mut ciphertext = encrypt_aead(
-            cipher,
+        let mut ciphertext = C::encrypt_aead(
+            cose_alg.into(),
             key,
             Some(&iv[..]),
             &enc_structure
@@ -261,7 +267,7 @@ impl CoseEncrypt0 {
             payload,
             &mut tag,
         )
-        .map_err(CoseError::EncryptionError)?;
+        .map_err(|e| CoseError::EncryptionError(Box::new(e)))?;
 
         ciphertext.append(&mut tag);
 
@@ -327,7 +333,7 @@ impl CoseEncrypt0 {
             ciphertext,
             tag,
         )
-        .map_err(CoseError::EncryptionError)?;
+        .map_err(|e| CoseError::EncryptionError(Box::new(e)))?;
 
         Ok((protected, &self.unprotected, payload))
     }
@@ -363,12 +369,24 @@ impl CoseEncrypt0 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::OpenSSL;
 
+    #[test]
+    fn test_iv_len() {
+        for cipher in [
+            COSEAlgorithm::AesGcm96_128_128,
+            COSEAlgorithm::AesGcm96_128_192,
+            COSEAlgorithm::AesGcm96_128_256,
+        ] {
+            assert_eq!(cipher.openssl_cipher().iv_len(), cipher.iv_len());
+        }
+    }
     #[test]
     fn test_encrypt_decrypt() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let cencrypt0 =
+            CoseEncrypt0::new::<OpenSSL>(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let (_, _, dec) = cencrypt0.decrypt(key).unwrap();
         assert_eq!(dec, plaintext);
         assert_ne!(
@@ -388,7 +406,7 @@ mod tests {
     fn test_encrypt_unsupported_alg() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x56\x56";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key);
+        let cencrypt0 = CoseEncrypt0::new::<OpenSSL>(plaintext, CipherConfiguration::Gcm, key);
         match cencrypt0.unwrap_err() {
             CoseError::UnsupportedError(_) => (),
             _ => panic!(),
@@ -399,7 +417,8 @@ mod tests {
     fn test_decrypt_invalid_alg_spec() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let mut cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let mut cencrypt0 =
+            CoseEncrypt0::new::<OpenSSL>(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let mut protected = HeaderMap::new();
         protected.insert(KTY.into(), CborValue::Text("invalid".to_string()));
         let protected_bytes = map_to_empty_or_serialized(&protected)
@@ -416,7 +435,8 @@ mod tests {
     fn test_decrypt_unsupported_openssl_cipher() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let mut cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let mut cencrypt0 =
+            CoseEncrypt0::new::<OpenSSL>(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let mut protected = HeaderMap::new();
         protected.insert(KTY.into(), CborValue::Integer(42));
         let protected_bytes = map_to_empty_or_serialized(&protected)
@@ -433,7 +453,8 @@ mod tests {
     fn test_decrypt_invalid_iv() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
-        let mut cencrypt0 = CoseEncrypt0::new(plaintext, CipherConfiguration::Gcm, key).unwrap();
+        let mut cencrypt0 =
+            CoseEncrypt0::new::<OpenSSL>(plaintext, CipherConfiguration::Gcm, key).unwrap();
         let mut unprotected = HeaderMap::new();
         unprotected.insert(IV.into(), CborValue::Integer(42));
         cencrypt0.unprotected = unprotected;
