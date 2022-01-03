@@ -8,6 +8,8 @@ use serde_cbor::Error as CborError;
 #[derive(Debug)]
 /// Aggregation of all error types returned by this library
 pub enum CoseError {
+    /// Failed to generate random bytes
+    RandomnessFailed(Box<dyn Error>),
     /// Signature could not be performed due to OpenSSL error.
     SignatureError(openssl::error::ErrorStack),
     /// This feature is not yet fully implemented according
@@ -25,7 +27,7 @@ pub enum CoseError {
     /// Tag is missing or incorrect.
     TagError(Option<u64>),
     /// Encryption could not be performed due to OpenSSL error.
-    EncryptionError(openssl::error::ErrorStack),
+    EncryptionError(Box<dyn Error>),
     /// TPM error occured
     #[cfg(feature = "key_tpm")]
     TpmError(tss_esapi::Error),
@@ -34,6 +36,7 @@ pub enum CoseError {
 impl fmt::Display for CoseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            CoseError::RandomnessFailed(e) => write!(f, "Randomness error: {}", e),
             CoseError::SignatureError(e) => write!(f, "Signature error: {}", e),
             CoseError::UnimplementedError => write!(f, "Not implemented"),
             CoseError::UnsupportedError(e) => write!(f, "Not supported: {}", e),
