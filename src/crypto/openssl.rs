@@ -1,4 +1,4 @@
-use super::{Encryption, EncryptionAlgorithm};
+use super::{Decryption, Encryption, EncryptionAlgorithm};
 use crate::error::CoseError;
 use openssl::symm::Cipher;
 
@@ -32,6 +32,25 @@ impl Encryption for OpenSSL {
             EncryptionAlgorithm::Aes256Gcm => Cipher::aes_256_gcm(),
         };
         openssl::symm::encrypt_aead(cipher, key, iv, aad, data, tag)
+            .map_err(|e| CoseError::EncryptionError(Box::new(e)))
+    }
+}
+
+impl Decryption for OpenSSL {
+    /// Like `decrypt`, but for AEAD ciphers such as AES GCM.
+    ///
+    /// Additional Authenticated Data can be provided in the `aad` field, and the authentication tag
+    /// should be provided in the `tag` field.
+    fn decrypt_aead(
+        algo: EncryptionAlgorithm,
+        key: &[u8],
+        iv: Option<&[u8]>,
+        aad: &[u8],
+        ciphertext: &[u8],
+        tag: &[u8],
+    ) -> Result<Vec<u8>, CoseError> {
+        let cipher: Cipher = algo.into();
+        openssl::symm::decrypt_aead(cipher, key, iv, aad, ciphertext, tag)
             .map_err(|e| CoseError::EncryptionError(Box::new(e)))
     }
 }

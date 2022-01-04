@@ -1,11 +1,10 @@
 //! COSE Encryption
-use openssl::symm::{decrypt_aead, Cipher};
 use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 
-use crate::crypto::Encryption;
+use crate::crypto::{Decryption, Encryption};
 use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
@@ -72,14 +71,6 @@ impl COSEAlgorithm {
             COSEAlgorithm::AesGcm96_128_128 => Some(12),
             COSEAlgorithm::AesGcm96_128_192 => Some(12),
             COSEAlgorithm::AesGcm96_128_256 => Some(12),
-        }
-    }
-
-    fn openssl_cipher(&self) -> Cipher {
-        match self {
-            COSEAlgorithm::AesGcm96_128_128 => Cipher::aes_128_gcm(),
-            COSEAlgorithm::AesGcm96_128_192 => Cipher::aes_192_gcm(),
-            COSEAlgorithm::AesGcm96_128_256 => Cipher::aes_256_gcm(),
         }
     }
 }
@@ -281,7 +272,10 @@ impl CoseEncrypt0 {
     /// Decrypt the ciphertext in the COSE_Encrypt0 structure and returns both
     /// the protected and unprotected HeaderMap(s).
     /// https://datatracker.ietf.org/doc/html/rfc8152#section-5.3
-    pub fn decrypt(&self, key: &[u8]) -> Result<(HeaderMap, &HeaderMap, Vec<u8>), CoseError> {
+    pub fn decrypt<C: Decryption>(
+        &self,
+        key: &[u8],
+    ) -> Result<(HeaderMap, &HeaderMap, Vec<u8>), CoseError> {
         let protected: HeaderMap =
             HeaderMap::from_bytes(&self.protected).map_err(CoseError::SerializationError)?;
 
@@ -323,8 +317,8 @@ impl CoseEncrypt0 {
             .ciphertext
             .split_at(self.ciphertext.len() - cose_alg.tag_size());
 
-        let payload = decrypt_aead(
-            cose_alg.openssl_cipher(),
+        let payload = C::decrypt_aead(
+            cose_alg.into(),
             key,
             Some(iv),
             &enc_structure
@@ -372,29 +366,19 @@ mod tests {
     use crate::crypto::OpenSSL;
 
     #[test]
-    fn test_iv_len() {
-        for cipher in [
-            COSEAlgorithm::AesGcm96_128_128,
-            COSEAlgorithm::AesGcm96_128_192,
-            COSEAlgorithm::AesGcm96_128_256,
-        ] {
-            assert_eq!(cipher.openssl_cipher().iv_len(), cipher.iv_len());
-        }
-    }
-    #[test]
     fn test_encrypt_decrypt() {
         let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
         let plaintext = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
         let cencrypt0 =
             CoseEncrypt0::new::<OpenSSL>(plaintext, CipherConfiguration::Gcm, key).unwrap();
-        let (_, _, dec) = cencrypt0.decrypt(key).unwrap();
+        let (_, _, dec) = cencrypt0.decrypt::<OpenSSL>(key).unwrap();
         assert_eq!(dec, plaintext);
         assert_ne!(
             plaintext.to_vec(),
             serde_cbor::to_vec(&cencrypt0.ciphertext).unwrap()
         );
         let fromb = CoseEncrypt0::from_bytes(&cencrypt0.as_bytes(true).unwrap()[..]).unwrap();
-        let (_, _, dec) = fromb.decrypt(key).unwrap();
+        let (_, _, dec) = fromb.decrypt::<OpenSSL>(key).unwrap();
         assert_eq!(dec, plaintext);
         assert_ne!(
             plaintext.to_vec(),
@@ -425,7 +409,7 @@ mod tests {
             .map_err(CoseError::SerializationError)
             .unwrap();
         cencrypt0.protected = ByteBuf::from(protected_bytes);
-        match cencrypt0.decrypt(key).unwrap_err() {
+        match cencrypt0.decrypt::<OpenSSL>(key).unwrap_err() {
             CoseError::SpecificationError(_) => (),
             _ => panic!(),
         }
@@ -443,7 +427,7 @@ mod tests {
             .map_err(CoseError::SerializationError)
             .unwrap();
         cencrypt0.protected = ByteBuf::from(protected_bytes);
-        match cencrypt0.decrypt(key).unwrap_err() {
+        match cencrypt0.decrypt::<OpenSSL>(key).unwrap_err() {
             CoseError::UnsupportedError(_) => (),
             _ => panic!(),
         }
@@ -458,7 +442,7 @@ mod tests {
         let mut unprotected = HeaderMap::new();
         unprotected.insert(IV.into(), CborValue::Integer(42));
         cencrypt0.unprotected = unprotected;
-        match cencrypt0.decrypt(key).unwrap_err() {
+        match cencrypt0.decrypt::<OpenSSL>(key).unwrap_err() {
             CoseError::SpecificationError(_) => (),
             _ => panic!(),
         }
