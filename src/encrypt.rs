@@ -360,7 +360,7 @@ impl CoseEncrypt0 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "openssl"))]
 mod tests {
     use super::*;
     use crate::crypto::OpenSSL;

@@ -3,14 +3,42 @@
 use openssl::{
     bn::BigNum,
     ecdsa::EcdsaSig,
+    nid::Nid,
     pkey::{HasPrivate, HasPublic, PKey, PKeyRef},
 };
 
 use crate::{
-    crypto::{ec_curve_to_parameters, MessageDigest, SigningPrivateKey, SigningPublicKey},
+    crypto::{MessageDigest, SigningPrivateKey, SigningPublicKey},
     error::CoseError,
     sign::SignatureAlgorithm,
 };
+
+/// Follows the recommandations put in place by the RFC and doesn't deal with potential
+/// mismatches: https://tools.ietf.org/html/rfc8152#section-8.1.
+pub fn ec_curve_to_parameters(
+    curve_name: Nid,
+) -> Result<(SignatureAlgorithm, MessageDigest, usize), CoseError> {
+    let sig_alg = match curve_name {
+        // Recommended to use with SHA256
+        Nid::X9_62_PRIME256V1 => SignatureAlgorithm::ES256,
+        // Recommended to use with SHA384
+        Nid::SECP384R1 => SignatureAlgorithm::ES384,
+        // Recommended to use with SHA512
+        Nid::SECP521R1 => SignatureAlgorithm::ES512,
+        _ => {
+            return Err(CoseError::UnsupportedError(format!(
+                "Curve name {:?} is not supported",
+                curve_name
+            )))
+        }
+    };
+
+    Ok((
+        sig_alg,
+        sig_alg.suggested_message_digest(),
+        sig_alg.key_length(),
+    ))
+}
 
 impl<T> SigningPublicKey for PKey<T>
 where

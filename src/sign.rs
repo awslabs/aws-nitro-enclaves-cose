@@ -8,7 +8,9 @@ use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-use crate::crypto::{Hash, MessageDigest, SigningPrivateKey, SigningPublicKey};
+#[cfg(feature = "openssl")]
+use crate::crypto::MessageDigest;
+use crate::crypto::{Hash, SigningPrivateKey, SigningPublicKey};
 use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
@@ -25,6 +27,7 @@ pub enum SignatureAlgorithm {
 }
 
 impl SignatureAlgorithm {
+    #[cfg(feature = "openssl")]
     pub(crate) fn key_length(&self) -> usize {
         match self {
             SignatureAlgorithm::ES256 => 32,
@@ -34,6 +37,7 @@ impl SignatureAlgorithm {
         }
     }
 
+    #[cfg(feature = "openssl")]
     pub(crate) fn suggested_message_digest(&self) -> MessageDigest {
         match self {
             SignatureAlgorithm::ES256 => MessageDigest::Sha256,

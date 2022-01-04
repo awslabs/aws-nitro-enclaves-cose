@@ -14,7 +14,7 @@ serde_cbor = { version="0.11", features = ["tags"] }
 serde_repr = "0.1"
 serde_bytes = "0.11"
 serde_with = { version = "1.5", default_features = false }
-openssl = "0.10"
+openssl = { version = "0.10", optional = true }
 tss-esapi = { version = "6.1", optional = true }
 
 [dependencies.serde]
@@ -26,5 +26,5 @@ hex = "0.4"
 
 [features]
 default = ["key_openssl_pkey"]
-key_openssl_pkey = []
-key_tpm = ["tss-esapi"]
+key_openssl_pkey = ["openssl"]
+key_tpm = ["tss-esapi", "openssl"]

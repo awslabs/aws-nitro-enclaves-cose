@@ -2,10 +2,13 @@
 
 use crate::encrypt::COSEAlgorithm;
 use crate::{error::CoseError, sign::SignatureAlgorithm};
-use ::openssl::nid::Nid;
+#[cfg(feature = "openssl")]
 use ::openssl::symm::Cipher;
 
+#[cfg(feature = "openssl")]
 mod openssl;
+
+#[cfg(feature = "openssl")]
 pub use self::openssl::OpenSSL;
 
 #[cfg(feature = "key_openssl_pkey")]
@@ -56,6 +59,7 @@ impl From<COSEAlgorithm> for EncryptionAlgorithm {
     }
 }
 
+#[cfg(feature = "openssl")]
 impl From<EncryptionAlgorithm> for Cipher {
     fn from(algo: EncryptionAlgorithm) -> Cipher {
         match algo {
@@ -92,6 +96,7 @@ pub enum MessageDigest {
     Sha512,
 }
 
+#[cfg(feature = "openssl")]
 impl From<MessageDigest> for ::openssl::hash::MessageDigest {
     fn from(digest: MessageDigest) -> Self {
         match digest {
@@ -119,33 +124,7 @@ pub trait SigningPublicKey {
     fn verify(&self, digest: &[u8], signature: &[u8]) -> Result<bool, CoseError>;
 }
 
-/// Follows the recommandations put in place by the RFC and doesn't deal with potential
-/// mismatches: https://tools.ietf.org/html/rfc8152#section-8.1.
-pub fn ec_curve_to_parameters(
-    curve_name: Nid,
-) -> Result<(SignatureAlgorithm, MessageDigest, usize), CoseError> {
-    let sig_alg = match curve_name {
-        // Recommended to use with SHA256
-        Nid::X9_62_PRIME256V1 => SignatureAlgorithm::ES256,
-        // Recommended to use with SHA384
-        Nid::SECP384R1 => SignatureAlgorithm::ES384,
-        // Recommended to use with SHA512
-        Nid::SECP521R1 => SignatureAlgorithm::ES512,
-        _ => {
-            return Err(CoseError::UnsupportedError(format!(
-                "Curve name {:?} is not supported",
-                curve_name
-            )))
-        }
-    };
-
-    Ok((
-        sig_alg,
-        sig_alg.suggested_message_digest(),
-        sig_alg.key_length(),
-    ))
-}
-
+#[cfg(feature = "openssl")]
 fn merge_ec_signature(bytes_r: &[u8], bytes_s: &[u8], key_length: usize) -> Vec<u8> {
     assert!(bytes_r.len() <= key_length);
     assert!(bytes_s.len() <= key_length);
