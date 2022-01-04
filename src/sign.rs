@@ -2,14 +2,13 @@
 
 use std::str::FromStr;
 
-use openssl::hash::{hash, MessageDigest};
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-use crate::crypto::{SigningPrivateKey, SigningPublicKey};
+use crate::crypto::{Hash, MessageDigest, SigningPrivateKey, SigningPublicKey};
 use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
@@ -37,9 +36,9 @@ impl SignatureAlgorithm {
 
     pub(crate) fn suggested_message_digest(&self) -> MessageDigest {
         match self {
-            SignatureAlgorithm::ES256 => MessageDigest::sha256(),
-            SignatureAlgorithm::ES384 => MessageDigest::sha384(),
-            SignatureAlgorithm::ES512 => MessageDigest::sha512(),
+            SignatureAlgorithm::ES256 => MessageDigest::Sha256,
+            SignatureAlgorithm::ES384 => MessageDigest::Sha384,
+            SignatureAlgorithm::ES512 => MessageDigest::Sha512,
         }
     }
 }
@@ -331,7 +330,7 @@ impl CoseSign1 {
     /// Creates a CoseSign1 structure from the given payload and some unprotected data in the form
     /// of a HeaderMap. Signs the content with the given key using the recommedations from the spec
     /// and sets the protected part of the document to reflect the algorithm used.
-    pub fn new(
+    pub fn new<H: Hash>(
         payload: &[u8],
         unprotected: &HeaderMap,
         key: &dyn SigningPrivateKey,
@@ -341,13 +340,13 @@ impl CoseSign1 {
         let mut protected = HeaderMap::new();
         protected.insert(1.into(), (sig_alg as i8).into());
 
-        Self::new_with_protected(payload, &protected, unprotected, key)
+        Self::new_with_protected::<H>(payload, &protected, unprotected, key)
     }
 
     /// Creates a CoseSign1 structure from the given payload and some protected and unprotected data
     /// in the form of a HeaderMap. Signs the content with the given key using the recommedations
     /// from the spec and sets the algorithm used into the protected header.
-    pub fn new_with_protected(
+    pub fn new_with_protected<H: Hash>(
         payload: &[u8],
         protected: &HeaderMap,
         unprotected: &HeaderMap,
@@ -362,13 +361,13 @@ impl CoseSign1 {
         let sig_structure = SigStructure::new_sign1(&protected_bytes, payload)
             .map_err(CoseError::SerializationError)?;
 
-        let struct_digest = hash(
+        let struct_digest = H::hash(
             digest,
             &sig_structure
                 .as_bytes()
                 .map_err(CoseError::SerializationError)?,
         )
-        .map_err(CoseError::SignatureError)?;
+        .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
         let signature = key.sign(struct_digest.as_ref())?;
 
@@ -426,7 +425,7 @@ impl CoseSign1 {
 
     /// This checks the signature included in the structure against the given public key and
     /// returns true if the signature matches the given key.
-    pub fn verify_signature(&self, key: &dyn SigningPublicKey) -> Result<bool, CoseError> {
+    pub fn verify_signature<H: Hash>(&self, key: &dyn SigningPublicKey) -> Result<bool, CoseError> {
         // In theory, the digest itself does not have to match the curve, however,
         // this is the recommendation and the spec does not even provide a way to specify
         // another digest type, so, signatures will fail if this is done differently
@@ -472,13 +471,13 @@ impl CoseSign1 {
         let sig_structure = SigStructure::new_sign1(&self.protected, &self.payload)
             .map_err(CoseError::SerializationError)?;
 
-        let struct_digest = hash(
+        let struct_digest = H::hash(
             digest,
             &sig_structure
                 .as_bytes()
                 .map_err(CoseError::SerializationError)?,
         )
-        .map_err(CoseError::SignatureError)?;
+        .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
         key.verify(struct_digest.as_ref(), &self.signature)
     }
@@ -486,11 +485,11 @@ impl CoseSign1 {
     /// This gets the `payload` and `protected` data of the document.
     /// If `key` is provided, it only gets the data if the signature is correctly verified,
     /// otherwise returns `Err(CoseError::UnverifiedSignature)`.
-    pub fn get_protected_and_payload(
+    pub fn get_protected_and_payload<H: Hash>(
         &self,
         key: Option<&dyn SigningPublicKey>,
     ) -> Result<(HeaderMap, Vec<u8>), CoseError> {
-        if key.is_some() && !self.verify_signature(key.unwrap())? {
+        if key.is_some() && !self.verify_signature::<H>(key.unwrap())? {
             return Err(CoseError::UnverifiedSignature);
         }
         let protected: HeaderMap =
@@ -501,8 +500,11 @@ impl CoseSign1 {
     /// This gets the `payload` of the document. If `key` is provided, it only gets the payload
     /// if the signature is correctly verified, otherwise returns
     /// `Err(CoseError::UnverifiedSignature)`.
-    pub fn get_payload(&self, key: Option<&dyn SigningPublicKey>) -> Result<Vec<u8>, CoseError> {
-        if key.is_some() && !self.verify_signature(key.unwrap())? {
+    pub fn get_payload<H: Hash>(
+        &self,
+        key: Option<&dyn SigningPublicKey>,
+    ) -> Result<Vec<u8>, CoseError> {
+        if key.is_some() && !self.verify_signature::<H>(key.unwrap())? {
             return Err(CoseError::UnverifiedSignature);
         }
         Ok(self.payload.to_vec())
@@ -632,6 +634,7 @@ mod tests {
 
     #[cfg(feature = "key_openssl_pkey")]
     mod openssl {
+        use crate::crypto::OpenSSL;
         use crate::sign::*;
         use openssl::pkey::{PKey, Private, Public};
 
@@ -792,7 +795,10 @@ mod tests {
             ])
             .unwrap();
 
-            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), TEXT);
+            assert_eq!(
+                cose_doc.get_payload::<OpenSSL>(Some(&ec_public)).unwrap(),
+                TEXT
+            );
         }
 
         #[test]
@@ -825,7 +831,10 @@ mod tests {
             ])
             .unwrap();
 
-            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), TEXT);
+            assert_eq!(
+                cose_doc.get_payload::<OpenSSL>(Some(&ec_public)).unwrap(),
+                TEXT
+            );
         }
 
         #[test]
@@ -860,7 +869,10 @@ mod tests {
             ])
             .unwrap();
 
-            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), TEXT);
+            assert_eq!(
+                cose_doc.get_payload::<OpenSSL>(Some(&ec_public)).unwrap(),
+                TEXT
+            );
         }
         #[test]
         fn cose_sign1_ec256_text() {
@@ -868,12 +880,12 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload(None).unwrap(),
-                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload::<OpenSSL>(None).unwrap(),
+                cose_doc2.get_payload::<OpenSSL>(Some(&ec_public)).unwrap()
             );
             assert!(!cose_doc2.get_unprotected().is_empty(),);
             assert_eq!(
@@ -888,7 +900,7 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             // Tag 6.18 should be present
             assert_eq!(tagged_bytes[0], 6 << 5 | 18);
@@ -897,8 +909,8 @@ mod tests {
             let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload(None).unwrap(),
-                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload::<OpenSSL>(None).unwrap(),
+                cose_doc2.get_payload::<OpenSSL>(Some(&ec_public)).unwrap()
             );
         }
 
@@ -908,15 +920,15 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             // Tag 6.18 should be present
             assert_eq!(tagged_bytes[0], 6 << 5 | 18);
             let cose_doc2: CoseSign1 = serde_cbor::from_slice(&tagged_bytes).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload(None).unwrap(),
-                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload::<OpenSSL>(None).unwrap(),
+                cose_doc2.get_payload::<OpenSSL>(Some(&ec_public)).unwrap()
             );
         }
 
@@ -934,12 +946,17 @@ mod tests {
             let mut unprotected = HeaderMap::new();
             unprotected.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 =
-                CoseSign1::new_with_protected(TEXT, &protected, &unprotected, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new_with_protected::<OpenSSL>(
+                TEXT,
+                &protected,
+                &unprotected,
+                &ec_private,
+            )
+            .unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             let (protected, payload) = cose_doc2
-                .get_protected_and_payload(Some(&ec_public))
+                .get_protected_and_payload::<OpenSSL>(Some(&ec_public))
                 .unwrap();
 
             assert_eq!(
@@ -959,12 +976,12 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload(None).unwrap(),
-                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload::<OpenSSL>(None).unwrap(),
+                cose_doc2.get_payload::<OpenSSL>(Some(&ec_public)).unwrap()
             );
         }
 
@@ -974,16 +991,16 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload(Some(&ec_public)).unwrap(),
+                cose_doc1.get_payload::<OpenSSL>(Some(&ec_public)).unwrap(),
                 TEXT.to_vec()
             );
             assert_eq!(
-                cose_doc1.get_payload(None).unwrap(),
-                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload::<OpenSSL>(None).unwrap(),
+                cose_doc2.get_payload::<OpenSSL>(Some(&ec_public)).unwrap()
             );
         }
 
@@ -993,7 +1010,7 @@ mod tests {
             let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
             let ec_private = PKey::from_ec_key(ec_private).unwrap();
             let map = HeaderMap::new();
-            let result = CoseSign1::new(TEXT, &map, &ec_private);
+            let result = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private);
             assert!(result.is_err());
         }
 
@@ -1004,10 +1021,12 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private).unwrap();
 
-            assert!(cose_doc1.verify_signature(&ec_public).unwrap());
-            assert!(!cose_doc1.verify_signature(&ec_public_other).unwrap());
+            assert!(cose_doc1.verify_signature::<OpenSSL>(&ec_public).unwrap());
+            assert!(!cose_doc1
+                .verify_signature::<OpenSSL>(&ec_public_other)
+                .unwrap());
         }
 
         #[test]
@@ -1017,10 +1036,12 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &ec_private).unwrap();
 
-            assert!(cose_doc1.verify_signature(&ec_public).unwrap());
-            assert!(!cose_doc1.verify_signature(&ec_public_other).unwrap());
+            assert!(cose_doc1.verify_signature::<OpenSSL>(&ec_public).unwrap());
+            assert!(!cose_doc1
+                .verify_signature::<OpenSSL>(&ec_public_other)
+                .unwrap());
         }
 
         #[test]
@@ -1050,7 +1071,7 @@ mod tests {
             ])
             .unwrap();
 
-            assert!(cose_doc.get_payload(Some(&ec_public)).is_err());
+            assert!(cose_doc.get_payload::<OpenSSL>(Some(&ec_public)).is_err());
         }
 
         #[test]
@@ -1080,7 +1101,7 @@ mod tests {
             ])
             .unwrap();
 
-            assert!(cose_doc.get_payload(Some(&ec_public)).is_err());
+            assert!(cose_doc.get_payload::<OpenSSL>(Some(&ec_public)).is_err());
         }
 
         #[test]
@@ -1193,7 +1214,10 @@ mod tests {
 
             let ec_public = rfc_8152_key_kid_11();
 
-            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), payload);
+            assert_eq!(
+                cose_doc.get_payload::<OpenSSL>(Some(&ec_public)).unwrap(),
+                payload
+            );
         }
     }
 
@@ -1264,8 +1288,10 @@ mod tests {
             let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload(None).unwrap(),
-                cose_doc2.get_payload(Some(&mut tpm_key)).unwrap()
+                cose_doc1.get_payload::<OpenSSL>(None).unwrap(),
+                cose_doc2
+                    .get_payload::<OpenSSL>(Some(&mut tpm_key))
+                    .unwrap()
             );
         }
 
@@ -1320,7 +1346,7 @@ mod tests {
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
-            match cose_doc2.get_payload(Some(&mut tpm_key)) {
+            match cose_doc2.get_payload::<OpenSSL>(Some(&mut tpm_key)) {
                 Ok(_) => panic!("Did not fail"),
                 Err(CoseError::UnverifiedSignature) => {}
                 Err(e) => {

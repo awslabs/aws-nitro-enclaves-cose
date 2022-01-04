@@ -1,4 +1,4 @@
-use super::{Decryption, Encryption, EncryptionAlgorithm};
+use super::{Decryption, Encryption, EncryptionAlgorithm, Hash, MessageDigest};
 use crate::error::CoseError;
 use openssl::symm::Cipher;
 
@@ -52,5 +52,13 @@ impl Decryption for OpenSSL {
         let cipher: Cipher = algo.into();
         openssl::symm::decrypt_aead(cipher, key, iv, aad, ciphertext, tag)
             .map_err(|e| CoseError::EncryptionError(Box::new(e)))
+    }
+}
+
+impl Hash for OpenSSL {
+    fn hash(digest: MessageDigest, data: &[u8]) -> Result<Vec<u8>, CoseError> {
+        openssl::hash::hash(digest.into(), data)
+            .map_err(|e| CoseError::HashingError(Box::new(e)))
+            .map(|h| h.to_vec())
     }
 }

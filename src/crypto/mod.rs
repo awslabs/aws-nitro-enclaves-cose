@@ -1,12 +1,9 @@
 //! (Signing) cryptography abstraction
 
-use ::openssl::hash::MessageDigest;
+use crate::encrypt::COSEAlgorithm;
+use crate::{error::CoseError, sign::SignatureAlgorithm};
 use ::openssl::nid::Nid;
 use ::openssl::symm::Cipher;
-
-use crate::encrypt::COSEAlgorithm;
-use crate::error::CoseError;
-use crate::sign::SignatureAlgorithm;
 
 mod openssl;
 pub use self::openssl::OpenSSL;
@@ -83,6 +80,32 @@ pub trait Decryption {
         data: &[u8],
         tag: &[u8],
     ) -> Result<Vec<u8>, CoseError>;
+}
+
+/// Cryptographic hash algorithms that can be used with the `Hash` trait
+pub enum MessageDigest {
+    /// 256-bit Secure Hash Algorithm
+    Sha256,
+    /// 384-bit Secure Hash Algorithm
+    Sha384,
+    /// 512-bit Secure Hash Algorithm
+    Sha512,
+}
+
+impl From<MessageDigest> for ::openssl::hash::MessageDigest {
+    fn from(digest: MessageDigest) -> Self {
+        match digest {
+            MessageDigest::Sha256 => ::openssl::hash::MessageDigest::sha256(),
+            MessageDigest::Sha384 => ::openssl::hash::MessageDigest::sha384(),
+            MessageDigest::Sha512 => ::openssl::hash::MessageDigest::sha512(),
+        }
+    }
+}
+
+/// A trait exposing various cryptographic hash algorithms
+pub trait Hash {
+    /// Computes the hash of the `data` with provided hash function
+    fn hash(digest: MessageDigest, data: &[u8]) -> Result<Vec<u8>, CoseError>;
 }
 
 /// A public key that can verify an existing signature
