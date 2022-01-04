@@ -3,12 +3,11 @@
 use openssl::{
     bn::BigNum,
     ecdsa::EcdsaSig,
-    hash::MessageDigest,
     pkey::{HasPrivate, HasPublic, PKey, PKeyRef},
 };
 
 use crate::{
-    crypto::{ec_curve_to_parameters, SigningPrivateKey, SigningPublicKey},
+    crypto::{ec_curve_to_parameters, MessageDigest, SigningPrivateKey, SigningPublicKey},
     error::CoseError,
     sign::SignatureAlgorithm,
 };
@@ -59,11 +58,13 @@ where
         // Recover the R and S factors from the signature contained in the object
         let (bytes_r, bytes_s) = signature.split_at(key_length);
 
-        let r = BigNum::from_slice(bytes_r).map_err(CoseError::SignatureError)?;
-        let s = BigNum::from_slice(bytes_s).map_err(CoseError::SignatureError)?;
+        let r = BigNum::from_slice(bytes_r).map_err(|e| CoseError::SignatureError(Box::new(e)))?;
+        let s = BigNum::from_slice(bytes_s).map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
-        let sig = EcdsaSig::from_private_components(r, s).map_err(CoseError::SignatureError)?;
-        sig.verify(digest, &key).map_err(CoseError::SignatureError)
+        let sig = EcdsaSig::from_private_components(r, s)
+            .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
+        sig.verify(digest, &key)
+            .map_err(|e| CoseError::SignatureError(Box::new(e)))
     }
 }
 
@@ -96,7 +97,8 @@ where
         // The Signer interface doesn't provide this, so this will use EcdsaSig interface instead
         // and concatenate R and S.
         // See https://tools.ietf.org/html/rfc8017#section-4.1 for details.
-        let signature = EcdsaSig::sign(digest, &key).map_err(CoseError::SignatureError)?;
+        let signature =
+            EcdsaSig::sign(digest, &key).map_err(|e| CoseError::SignatureError(Box::new(e)))?;
         let bytes_r = signature.r().to_vec();
         let bytes_s = signature.s().to_vec();
 

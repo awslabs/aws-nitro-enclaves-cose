@@ -10,8 +10,10 @@ use serde_cbor::Error as CborError;
 pub enum CoseError {
     /// Failed to generate random bytes
     RandomnessFailed(Box<dyn Error>),
+    /// Computation of a cryptographic hash failed
+    HashingError(Box<dyn Error>),
     /// Signature could not be performed due to OpenSSL error.
-    SignatureError(openssl::error::ErrorStack),
+    SignatureError(Box<dyn Error>),
     /// This feature is not yet fully implemented according
     /// to the spec.
     UnimplementedError,
@@ -37,6 +39,7 @@ impl fmt::Display for CoseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CoseError::RandomnessFailed(e) => write!(f, "Randomness error: {}", e),
+            CoseError::HashingError(e) => write!(f, "Hashing failed: {}", e),
             CoseError::SignatureError(e) => write!(f, "Signature error: {}", e),
             CoseError::UnimplementedError => write!(f, "Not implemented"),
             CoseError::UnsupportedError(e) => write!(f, "Not supported: {}", e),
@@ -55,7 +58,7 @@ impl fmt::Display for CoseError {
 impl Error for CoseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            CoseError::SignatureError(e) => Some(e),
+            CoseError::SignatureError(e) => e.source(),
             CoseError::SerializationError(e) => Some(e),
             _ => None,
         }
