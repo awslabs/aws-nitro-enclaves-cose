@@ -1,89 +1,13 @@
 //! COSE Signing
 
-use std::str::FromStr;
-
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
-use serde_repr::{Deserialize_repr, Serialize_repr};
 
-#[cfg(feature = "openssl")]
-use crate::crypto::MessageDigest;
 use crate::crypto::{Hash, SigningPrivateKey, SigningPublicKey};
 use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
-
-/// Values from https://tools.ietf.org/html/rfc8152#section-8.1
-#[derive(Debug, Copy, Clone, Serialize_repr, Deserialize_repr)]
-#[repr(i8)]
-pub enum SignatureAlgorithm {
-    ///  ECDSA w/ SHA-256
-    ES256 = -7,
-    ///  ECDSA w/ SHA-384
-    ES384 = -35,
-    /// ECDSA w/ SHA-512
-    ES512 = -36,
-}
-
-impl SignatureAlgorithm {
-    #[cfg(feature = "openssl")]
-    pub(crate) fn key_length(&self) -> usize {
-        match self {
-            SignatureAlgorithm::ES256 => 32,
-            SignatureAlgorithm::ES384 => 48,
-            // Not a typo
-            SignatureAlgorithm::ES512 => 66,
-        }
-    }
-
-    #[cfg(feature = "openssl")]
-    pub(crate) fn suggested_message_digest(&self) -> MessageDigest {
-        match self {
-            SignatureAlgorithm::ES256 => MessageDigest::Sha256,
-            SignatureAlgorithm::ES384 => MessageDigest::Sha384,
-            SignatureAlgorithm::ES512 => MessageDigest::Sha512,
-        }
-    }
-}
-
-impl FromStr for SignatureAlgorithm {
-    type Err = CoseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ES256" => Ok(SignatureAlgorithm::ES256),
-            "ES384" => Ok(SignatureAlgorithm::ES384),
-            "ES512" => Ok(SignatureAlgorithm::ES512),
-            name => Err(CoseError::UnsupportedError(format!(
-                "Algorithm '{}' is not supported",
-                name
-            ))),
-        }
-    }
-}
-
-impl ToString for SignatureAlgorithm {
-    fn to_string(&self) -> String {
-        match self {
-            SignatureAlgorithm::ES256 => "ES256",
-            SignatureAlgorithm::ES384 => "ES384",
-            SignatureAlgorithm::ES512 => "ES512",
-        }
-        .to_string()
-    }
-}
-
-impl From<SignatureAlgorithm> for HeaderMap {
-    fn from(sig_alg: SignatureAlgorithm) -> Self {
-        // Convenience method for creating the map that would go into the signature structures
-        // Can be appended into a larger HeaderMap
-        // `1` is the index defined in the spec for Algorithm
-        let mut map = HeaderMap::new();
-        map.insert(1.into(), (sig_alg as i8).into());
-        map
-    }
-}
 
 ///  Implementation of the Sig_structure as defined in
 ///  [RFC8152](https://tools.ietf.org/html/rfc8152#section-4.4).
@@ -522,10 +446,12 @@ impl CoseSign1 {
 
 #[cfg(test)]
 mod tests {
+
     // Public domain work: Pride and Prejudice by Jane Austen, taken from https://www.gutenberg.org/files/1342/1342.txt
     const TEXT: &[u8] = b"It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.";
 
     mod generic {
+        use crate::crypto::SignatureAlgorithm;
         use crate::sign::*;
 
         use super::TEXT;
@@ -639,6 +565,7 @@ mod tests {
     #[cfg(feature = "key_openssl_pkey")]
     mod openssl {
         use crate::crypto::OpenSSL;
+        use crate::crypto::SignatureAlgorithm;
         use crate::sign::*;
         use openssl::pkey::{PKey, Private, Public};
 

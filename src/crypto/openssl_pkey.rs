@@ -8,9 +8,8 @@ use openssl::{
 };
 
 use crate::{
-    crypto::{MessageDigest, SigningPrivateKey, SigningPublicKey},
+    crypto::{MessageDigest, SignatureAlgorithm, SigningPrivateKey, SigningPublicKey},
     error::CoseError,
-    sign::SignatureAlgorithm,
 };
 
 /// Follows the recommandations put in place by the RFC and doesn't deal with potential
