@@ -1,9 +1,12 @@
 //! (Signing) cryptography abstraction
 
 use crate::encrypt::COSEAlgorithm;
-use crate::{error::CoseError, sign::SignatureAlgorithm};
+use crate::error::CoseError;
+use crate::header_map::HeaderMap;
 #[cfg(feature = "openssl")]
 use ::openssl::symm::Cipher;
+use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::str::FromStr;
 
 #[cfg(feature = "openssl")]
 mod openssl;
@@ -148,4 +151,75 @@ fn merge_ec_signature(bytes_r: &[u8], bytes_s: &[u8], key_length: usize) -> Vec<
 pub trait SigningPrivateKey: SigningPublicKey {
     /// Given a digest, returns a signature
     fn sign(&self, digest: &[u8]) -> Result<Vec<u8>, CoseError>;
+}
+
+/// Values from https://tools.ietf.org/html/rfc8152#section-8.1
+#[derive(Debug, Copy, Clone, Serialize_repr, Deserialize_repr)]
+#[repr(i8)]
+pub enum SignatureAlgorithm {
+    ///  ECDSA w/ SHA-256
+    ES256 = -7,
+    ///  ECDSA w/ SHA-384
+    ES384 = -35,
+    /// ECDSA w/ SHA-512
+    ES512 = -36,
+}
+
+impl SignatureAlgorithm {
+    /// Key length of the given signature algorithm
+    pub fn key_length(&self) -> usize {
+        match self {
+            SignatureAlgorithm::ES256 => 32,
+            SignatureAlgorithm::ES384 => 48,
+            // Not a typo
+            SignatureAlgorithm::ES512 => 66,
+        }
+    }
+
+    /// Suggested cryptographic hash function given a signature algorithm
+    pub fn suggested_message_digest(&self) -> MessageDigest {
+        match self {
+            SignatureAlgorithm::ES256 => MessageDigest::Sha256,
+            SignatureAlgorithm::ES384 => MessageDigest::Sha384,
+            SignatureAlgorithm::ES512 => MessageDigest::Sha512,
+        }
+    }
+}
+
+impl FromStr for SignatureAlgorithm {
+    type Err = CoseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ES256" => Ok(SignatureAlgorithm::ES256),
+            "ES384" => Ok(SignatureAlgorithm::ES384),
+            "ES512" => Ok(SignatureAlgorithm::ES512),
+            name => Err(CoseError::UnsupportedError(format!(
+                "Algorithm '{}' is not supported",
+                name
+            ))),
+        }
+    }
+}
+
+impl ToString for SignatureAlgorithm {
+    fn to_string(&self) -> String {
+        match self {
+            SignatureAlgorithm::ES256 => "ES256",
+            SignatureAlgorithm::ES384 => "ES384",
+            SignatureAlgorithm::ES512 => "ES512",
+        }
+        .to_string()
+    }
+}
+
+impl From<SignatureAlgorithm> for HeaderMap {
+    fn from(sig_alg: SignatureAlgorithm) -> Self {
+        // Convenience method for creating the map that would go into the signature structures
+        // Can be appended into a larger HeaderMap
+        // `1` is the index defined in the spec for Algorithm
+        let mut map = HeaderMap::new();
+        map.insert(1.into(), (sig_alg as i8).into());
+        map
+    }
 }
