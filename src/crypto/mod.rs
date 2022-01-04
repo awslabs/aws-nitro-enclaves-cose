@@ -1,6 +1,8 @@
 //! (Signing) cryptography abstraction
 
-use ::openssl::{hash::MessageDigest, nid::Nid};
+use ::openssl::hash::MessageDigest;
+use ::openssl::nid::Nid;
+use ::openssl::symm::Cipher;
 
 use crate::encrypt::COSEAlgorithm;
 use crate::error::CoseError;
@@ -55,6 +57,32 @@ impl From<COSEAlgorithm> for EncryptionAlgorithm {
             COSEAlgorithm::AesGcm96_128_256 => EncryptionAlgorithm::Aes256Gcm,
         }
     }
+}
+
+impl From<EncryptionAlgorithm> for Cipher {
+    fn from(algo: EncryptionAlgorithm) -> Cipher {
+        match algo {
+            EncryptionAlgorithm::Aes128Gcm => Cipher::aes_128_gcm(),
+            EncryptionAlgorithm::Aes192Gcm => Cipher::aes_192_gcm(),
+            EncryptionAlgorithm::Aes256Gcm => Cipher::aes_256_gcm(),
+        }
+    }
+}
+
+/// A trait exposing various aead decryption algorithms.
+pub trait Decryption {
+    /// Like `decrypt`, but for AEAD ciphers such as AES GCM.
+    ///
+    /// Additional Authenticated Data can be provided in the `aad` field, and the authentication tag
+    /// should be provided in the `tag` field.
+    fn decrypt_aead(
+        algo: EncryptionAlgorithm,
+        key: &[u8],
+        iv: Option<&[u8]>,
+        aad: &[u8],
+        data: &[u8],
+        tag: &[u8],
+    ) -> Result<Vec<u8>, CoseError>;
 }
 
 /// A public key that can verify an existing signature
