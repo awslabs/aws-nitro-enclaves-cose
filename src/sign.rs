@@ -1155,7 +1155,9 @@ mod tests {
     #[cfg(feature = "key_tpm")]
     mod tpm {
         use super::TEXT;
-        use crate::{crypto::tpm::TpmKey, sign::*};
+        use crate::crypto::tpm::TpmKey;
+        use crate::crypto::OpenSSL;
+        use crate::sign::*;
 
         use tss_esapi::{
             attributes::SessionAttributesBuilder,
@@ -1211,7 +1213,7 @@ mod tests {
 
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-            let cose_doc1 = CoseSign1::new(TEXT, &map, &mut tpm_key).unwrap();
+            let cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &mut tpm_key).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
             // Tag 6.18 should be present
@@ -1269,7 +1271,7 @@ mod tests {
 
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-            let mut cose_doc1 = CoseSign1::new(TEXT, &map, &mut tpm_key).unwrap();
+            let mut cose_doc1 = CoseSign1::new::<OpenSSL>(TEXT, &map, &mut tpm_key).unwrap();
 
             // Mangle the signature
             cose_doc1.signature[0] = 0;

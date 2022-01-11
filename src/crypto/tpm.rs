@@ -2,7 +2,6 @@
 
 use std::{cell::RefCell, convert::TryInto};
 
-use openssl::hash::MessageDigest;
 use tss_esapi::{
     constants::{
         self as tpm_constants,
@@ -16,9 +15,8 @@ use tss_esapi::{
 };
 
 use crate::{
-    crypto::{SigningPrivateKey, SigningPublicKey},
+    crypto::{MessageDigest, SignatureAlgorithm, SigningPrivateKey, SigningPublicKey},
     error::CoseError,
-    sign::SignatureAlgorithm,
 };
 
 const TSS2_RC_SIGNATURE: u32 = tpm_constants::tss::TPM2_RC_SIGNATURE
@@ -74,9 +72,9 @@ impl TpmKey {
 
         let scheme = unsafe { params.scheme.details.ecdsa };
         let param_hash_alg = match scheme.hashAlg {
-            tpm_constants::tss::TPM2_ALG_SHA256 => MessageDigest::sha256(),
-            tpm_constants::tss::TPM2_ALG_SHA384 => MessageDigest::sha384(),
-            tpm_constants::tss::TPM2_ALG_SHA512 => MessageDigest::sha512(),
+            tpm_constants::tss::TPM2_ALG_SHA256 => MessageDigest::Sha256,
+            tpm_constants::tss::TPM2_ALG_SHA384 => MessageDigest::Sha384,
+            tpm_constants::tss::TPM2_ALG_SHA512 => MessageDigest::Sha512,
             hash_alg => {
                 return Err(CoseError::UnsupportedError(format!(
                     "Key hash alg {} is not supported",
