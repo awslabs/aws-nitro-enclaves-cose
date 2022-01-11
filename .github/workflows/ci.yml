@@ -21,7 +21,6 @@ jobs:
                 rust: [1.46.0, stable, nightly]
                 key_feature_set:
                   - key_openssl_pkey
-                  - key_tpm
         steps:
         - uses: actions/checkout@v2
         - uses: dtolnay/rust-toolchain@master

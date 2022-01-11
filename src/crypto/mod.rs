@@ -90,6 +90,7 @@ pub trait Decryption {
 }
 
 /// Cryptographic hash algorithms that can be used with the `Hash` trait
+#[derive(Debug, Copy, Clone)]
 pub enum MessageDigest {
     /// 256-bit Secure Hash Algorithm
     Sha256,
