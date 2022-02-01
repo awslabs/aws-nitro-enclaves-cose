@@ -1,6 +1,6 @@
 //! (Signing) cryptography abstraction
 
-use crate::encrypt::COSEAlgorithm;
+use crate::encrypt::CoseAlgorithm;
 use crate::error::CoseError;
 use crate::header_map::HeaderMap;
 #[cfg(feature = "openssl")]
@@ -12,18 +12,21 @@ use std::str::FromStr;
 mod openssl;
 
 #[cfg(feature = "openssl")]
-pub use self::openssl::OpenSSL;
+pub use self::openssl::Openssl;
 
 #[cfg(feature = "key_openssl_pkey")]
 mod openssl_pkey;
 #[cfg(feature = "key_tpm")]
 pub mod tpm;
 
-/// A trait exposing various aead encryption algorithms.
-pub trait Encryption {
+/// A trait exposing a source of entropy
+pub trait Entropy {
     /// Fill the provided `buff` with cryptographic random values.
     fn rand_bytes(buff: &mut [u8]) -> Result<(), CoseError>;
+}
 
+/// A trait exposing various aead encryption algorithms.
+pub trait Encryption {
     /// Encryption for AEAD ciphers such as AES GCM.
     ///
     /// Additional Authenticated Data (AEAD) can be provided in the `aad` field, and the authentication tag
@@ -52,12 +55,12 @@ pub enum EncryptionAlgorithm {
     Aes256Gcm,
 }
 
-impl From<COSEAlgorithm> for EncryptionAlgorithm {
-    fn from(algo: COSEAlgorithm) -> EncryptionAlgorithm {
+impl From<CoseAlgorithm> for EncryptionAlgorithm {
+    fn from(algo: CoseAlgorithm) -> EncryptionAlgorithm {
         match algo {
-            COSEAlgorithm::AesGcm96_128_128 => EncryptionAlgorithm::Aes128Gcm,
-            COSEAlgorithm::AesGcm96_128_192 => EncryptionAlgorithm::Aes192Gcm,
-            COSEAlgorithm::AesGcm96_128_256 => EncryptionAlgorithm::Aes256Gcm,
+            CoseAlgorithm::AesGcm96_128_128 => EncryptionAlgorithm::Aes128Gcm,
+            CoseAlgorithm::AesGcm96_128_192 => EncryptionAlgorithm::Aes192Gcm,
+            CoseAlgorithm::AesGcm96_128_256 => EncryptionAlgorithm::Aes256Gcm,
         }
     }
 }

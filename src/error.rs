@@ -9,7 +9,7 @@ use serde_cbor::Error as CborError;
 /// Aggregation of all error types returned by this library
 pub enum CoseError {
     /// Failed to generate random bytes
-    RandomnessFailed(Box<dyn Error>),
+    EntropyError(Box<dyn Error>),
     /// Computation of a cryptographic hash failed
     HashingError(Box<dyn Error>),
     /// Signature could not be performed due to OpenSSL error.
@@ -38,7 +38,7 @@ pub enum CoseError {
 impl fmt::Display for CoseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CoseError::RandomnessFailed(e) => write!(f, "Randomness error: {}", e),
+            CoseError::EntropyError(e) => write!(f, "Entropy error: {}", e),
             CoseError::HashingError(e) => write!(f, "Hashing failed: {}", e),
             CoseError::SignatureError(e) => write!(f, "Signature error: {}", e),
             CoseError::UnimplementedError => write!(f, "Not implemented"),

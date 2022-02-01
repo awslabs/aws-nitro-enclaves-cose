@@ -1,15 +1,17 @@
-use super::{Decryption, Encryption, EncryptionAlgorithm, Hash, MessageDigest};
+use super::{Decryption, Encryption, EncryptionAlgorithm, Entropy, Hash, MessageDigest};
 use crate::error::CoseError;
 use openssl::symm::Cipher;
 
 /// Type that implements various cryptographic traits using the OpenSSL library
-pub struct OpenSSL;
+pub struct Openssl;
 
-impl Encryption for OpenSSL {
+impl Entropy for Openssl {
     fn rand_bytes(buff: &mut [u8]) -> Result<(), CoseError> {
-        openssl::rand::rand_bytes(buff).map_err(|e| CoseError::RandomnessFailed(Box::new(e)))
+        openssl::rand::rand_bytes(buff).map_err(|e| CoseError::EntropyError(Box::new(e)))
     }
+}
 
+impl Encryption for Openssl {
     /// Like `encrypt`, but for AEAD ciphers such as AES GCM.
     ///
     /// Additional Authenticated Data can be provided in the `aad` field, and the authentication tag
@@ -36,7 +38,7 @@ impl Encryption for OpenSSL {
     }
 }
 
-impl Decryption for OpenSSL {
+impl Decryption for Openssl {
     /// Like `decrypt`, but for AEAD ciphers such as AES GCM.
     ///
     /// Additional Authenticated Data can be provided in the `aad` field, and the authentication tag
@@ -55,7 +57,7 @@ impl Decryption for OpenSSL {
     }
 }
 
-impl Hash for OpenSSL {
+impl Hash for Openssl {
     fn hash(digest: MessageDigest, data: &[u8]) -> Result<Vec<u8>, CoseError> {
         openssl::hash::hash(digest.into(), data)
             .map_err(|e| CoseError::HashingError(Box::new(e)))
