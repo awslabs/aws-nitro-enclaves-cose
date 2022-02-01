@@ -28,7 +28,3 @@ hex = "0.4"
 default = ["key_openssl_pkey"]
 key_openssl_pkey = ["openssl"]
 key_tpm = ["tss-esapi", "openssl"]
-
-[patch.crates-io]
-serde_bytes = { git = "https://github.com/fortanix/bytes.git", branch = "raoul/no_std_compatibility" }
-serde = { git = "https://github.com/fortanix/serde.git", branch = "raoul/stdlib_1.0.136" }
