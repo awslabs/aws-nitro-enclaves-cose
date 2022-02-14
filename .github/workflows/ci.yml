@@ -60,7 +60,21 @@ jobs:
         - name: Run clippy
           run: |
               cargo clippy --features key_tpm,key_openssl_pkey --all
-
+    
+    test_parsec:
+        name: Test Parsec integration
+        runs-on: ubuntu-latest
+        steps:
+        - uses: actions/checkout@v2
+        - run: |
+              curl -s -N -L https://github.com/parallaxsecond/parsec/releases/download/1.0.0/quickstart-1.0.0-linux_x86.tar.gz | tar xz --strip-components=1
+              export PARSEC_SERVICE_ENDPOINT=unix:$(pwd)/parsec.sock
+              ./parsec &
+              sleep 5
+              ./parsec-tool ping
+              cargo test --features key_parsec
+              pkill parsec
+              
     clippy:
         name: Clippy
         runs-on: ubuntu-latest
