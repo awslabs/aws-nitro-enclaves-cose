@@ -591,7 +591,7 @@ mod tests {
             let ec_public =
                 openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
             let ec_private =
-                openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key())
+                openssl::ec::EcKey::from_private_components(&alg, &d, ec_public.public_key())
                     .unwrap();
             (
                 PKey::from_ec_key(ec_private).unwrap(),
@@ -620,7 +620,7 @@ mod tests {
             let ec_public =
                 openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
             let ec_private =
-                openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key())
+                openssl::ec::EcKey::from_private_components(&alg, &d, ec_public.public_key())
                     .unwrap();
             (
                 PKey::from_ec_key(ec_private).unwrap(),
@@ -652,7 +652,7 @@ mod tests {
             let ec_public =
                 openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
             let ec_private =
-                openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key())
+                openssl::ec::EcKey::from_private_components(&alg, &d, ec_public.public_key())
                     .unwrap();
             (
                 PKey::from_ec_key(ec_private).unwrap(),
@@ -1209,11 +1209,11 @@ mod tests {
                 )
                 .expect("Unable to create primary key")
                 .key_handle;
-            let mut tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
+            let tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
 
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &mut tpm_key).unwrap();
+            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &tpm_key).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
             // Tag 6.18 should be present
@@ -1222,9 +1222,7 @@ mod tests {
 
             assert_eq!(
                 cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                cose_doc2
-                    .get_payload::<Openssl>(Some(&mut tpm_key))
-                    .unwrap()
+                cose_doc2.get_payload::<Openssl>(Some(&tpm_key)).unwrap()
             );
         }
 
@@ -1267,11 +1265,11 @@ mod tests {
                 )
                 .expect("Unable to create primary key")
                 .key_handle;
-            let mut tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
+            let tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
 
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-            let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &mut tpm_key).unwrap();
+            let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &tpm_key).unwrap();
 
             // Mangle the signature
             cose_doc1.signature[0] = 0;
@@ -1279,13 +1277,133 @@ mod tests {
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
-            match cose_doc2.get_payload::<Openssl>(Some(&mut tpm_key)) {
+            match cose_doc2.get_payload::<Openssl>(Some(&tpm_key)) {
                 Ok(_) => panic!("Did not fail"),
                 Err(CoseError::UnverifiedSignature) => {}
                 Err(e) => {
                     panic!("Unexpected error: {:?}", e)
                 }
             }
+        }
+    }
+
+    #[cfg(feature = "key_parsec")]
+    mod parsec {
+        use super::TEXT;
+        use crate::crypto::parsec::ParsecKey;
+        use crate::crypto::Openssl;
+        use crate::sign::*;
+
+        use parsec_client::{
+            core::interface::operations::{
+                psa_algorithm::{Algorithm, AsymmetricSignature, Hash, SignHash},
+                psa_key_attributes::{Attributes, EccFamily, Lifetime, Policy, Type, UsageFlags},
+            },
+            BasicClient,
+        };
+
+        #[test]
+        fn cose_sign_parsec() {
+            let parsec_key_name = String::from("parsec-sign-key");
+
+            // create key through Parsec
+            let parsec_client = BasicClient::new(None).expect("Failed to start Parsec client");
+            let mut usage_flags = UsageFlags::default();
+            usage_flags.set_sign_hash().set_verify_hash();
+            parsec_client
+                .psa_generate_key(
+                    &parsec_key_name,
+                    Attributes {
+                        lifetime: Lifetime::Persistent,
+                        key_type: Type::EccKeyPair {
+                            curve_family: EccFamily::SecpR1,
+                        },
+                        bits: 256,
+                        policy: Policy {
+                            usage_flags,
+                            permitted_algorithms: Algorithm::AsymmetricSignature(
+                                AsymmetricSignature::Ecdsa {
+                                    hash_alg: SignHash::Specific(Hash::Sha256),
+                                },
+                            ),
+                        },
+                    },
+                )
+                .expect("Failed to create Parsec key");
+            let parsec_key = ParsecKey::new(parsec_key_name.clone(), None)
+                .expect("Failed to link to Parsec key");
+
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &parsec_key).unwrap();
+            let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+
+            // Tag 6.18 should be present
+            assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+            let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+            assert_eq!(
+                cose_doc1.get_payload::<Openssl>(None).unwrap(),
+                cose_doc2.get_payload::<Openssl>(Some(&parsec_key)).unwrap()
+            );
+
+            parsec_client
+                .psa_destroy_key(&parsec_key_name)
+                .expect("Failed to clean up key");
+        }
+
+        #[test]
+        fn cose_sign_parsec_invalid_signature() {
+            let parsec_key_name = String::from("parsec-sign-invalid-signature-key");
+
+            // create key through Parsec
+            let parsec_client = BasicClient::new(None).expect("Failed to start Parsec client");
+            let mut usage_flags = UsageFlags::default();
+            usage_flags.set_sign_hash().set_verify_hash();
+            parsec_client
+                .psa_generate_key(
+                    &parsec_key_name,
+                    Attributes {
+                        lifetime: Lifetime::Persistent,
+                        key_type: Type::EccKeyPair {
+                            curve_family: EccFamily::SecpR1,
+                        },
+                        bits: 256,
+                        policy: Policy {
+                            usage_flags,
+                            permitted_algorithms: Algorithm::AsymmetricSignature(
+                                AsymmetricSignature::Ecdsa {
+                                    hash_alg: SignHash::Specific(Hash::Sha256),
+                                },
+                            ),
+                        },
+                    },
+                )
+                .expect("Failed to create Parsec key");
+            let parsec_key = ParsecKey::new(parsec_key_name.clone(), None)
+                .expect("Failed to link to Parsec key");
+
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &parsec_key).unwrap();
+
+            // Mangle the signature
+            cose_doc1.signature[0] |= 0xFF;
+
+            let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+            let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+            match cose_doc2.get_payload::<Openssl>(Some(&parsec_key)) {
+                Ok(_) => panic!("Did not fail"),
+                Err(CoseError::UnverifiedSignature) => {}
+                Err(e) => {
+                    panic!("Unexpected error: {:?}", e)
+                }
+            }
+
+            parsec_client
+                .psa_destroy_key(&parsec_key_name)
+                .expect("Failed to clean up key");
         }
     }
 }

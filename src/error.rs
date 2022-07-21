@@ -33,6 +33,9 @@ pub enum CoseError {
     /// TPM error occured
     #[cfg(feature = "key_tpm")]
     TpmError(tss_esapi::Error),
+    /// PARSEC error occured
+    #[cfg(feature = "key_parsec")]
+    ParsecError(parsec_client::error::Error),
 }
 
 impl fmt::Display for CoseError {
@@ -51,6 +54,8 @@ impl fmt::Display for CoseError {
             CoseError::EncryptionError(e) => write!(f, "Encryption error: {}", e),
             #[cfg(feature = "key_tpm")]
             CoseError::TpmError(e) => write!(f, "TPM error: {}", e),
+            #[cfg(feature = "key_parsec")]
+            CoseError::ParsecError(e) => write!(f, "Parsec error: {}", e),
         }
     }
 }

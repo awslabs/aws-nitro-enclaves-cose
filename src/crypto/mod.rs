@@ -16,6 +16,8 @@ pub use self::openssl::Openssl;
 
 #[cfg(feature = "key_openssl_pkey")]
 mod openssl_pkey;
+#[cfg(feature = "key_parsec")]
+pub mod parsec;
 #[cfg(feature = "key_tpm")]
 pub mod tpm;
 
