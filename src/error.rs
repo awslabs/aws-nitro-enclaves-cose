@@ -35,13 +35,13 @@ pub enum CoseError {
     TpmError(tss_esapi::Error),
     /// AWS sign error occured
     #[cfg(feature = "key_kms")]
-    AwsSignError(aws_sdk_kms::SdkError<aws_sdk_kms::error::SignError>),
+    AwsSignError(aws_sdk_kms::types::SdkError<aws_sdk_kms::error::SignError>),
     /// AWS verify error occured
     #[cfg(feature = "key_kms")]
-    AwsVerifyError(aws_sdk_kms::SdkError<aws_sdk_kms::error::VerifyError>),
+    AwsVerifyError(aws_sdk_kms::types::SdkError<aws_sdk_kms::error::VerifyError>),
     /// AWS GetPublicKey error occured
     #[cfg(all(feature = "key_kms", feature = "key_openssl_pkey"))]
-    AwsGetPublicKeyError(aws_sdk_kms::SdkError<aws_sdk_kms::error::GetPublicKeyError>),
+    AwsGetPublicKeyError(aws_sdk_kms::types::SdkError<aws_sdk_kms::error::GetPublicKeyError>),
 }
 
 impl fmt::Display for CoseError {

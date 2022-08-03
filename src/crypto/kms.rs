@@ -3,7 +3,6 @@
 use openssl::{
     bn::BigNum,
     ecdsa::EcdsaSig,
-    hash::MessageDigest,
     pkey::{PKey, Public},
 };
 use tokio::runtime::Runtime;
@@ -11,13 +10,15 @@ use tokio::runtime::Runtime;
 use aws_sdk_kms::{
     error::{VerifyError, VerifyErrorKind},
     model::{MessageType, SigningAlgorithmSpec},
-    Blob, Client, SdkError,
+    types::Blob,
+    types::SdkError,
+    Client,
 };
 
 use crate::{
-    crypto::{ec_curve_to_parameters, SigningPrivateKey, SigningPublicKey},
+    crypto::openssl_pkey::ec_curve_to_parameters,
+    crypto::{MessageDigest, SignatureAlgorithm, SigningPrivateKey, SigningPublicKey},
     error::CoseError,
-    sign::SignatureAlgorithm,
 };
 
 /// A reference to an AWS KMS key and client
@@ -94,7 +95,8 @@ impl KmsKey {
                         CoseError::UnsupportedError("No public key returned".to_string())
                     })?;
 
-                PKey::public_key_from_der(public_key.as_ref()).map_err(CoseError::SignatureError)?
+                PKey::public_key_from_der(public_key.as_ref())
+                    .map_err(|e| CoseError::SignatureError(Box::new(e)))?
             }
         };
 
@@ -151,11 +153,16 @@ impl SigningPublicKey for KmsKey {
             // Recover the R and S factors from the signature contained in the object
             let (bytes_r, bytes_s) = signature.split_at(self.sig_alg.key_length());
 
-            let r = BigNum::from_slice(&bytes_r).map_err(CoseError::SignatureError)?;
-            let s = BigNum::from_slice(&bytes_s).map_err(CoseError::SignatureError)?;
+            let r =
+                BigNum::from_slice(&bytes_r).map_err(|e| CoseError::SignatureError(Box::new(e)))?;
+            let s =
+                BigNum::from_slice(&bytes_s).map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
-            let sig = EcdsaSig::from_private_components(r, s).map_err(CoseError::SignatureError)?;
-            let sig = sig.to_der().map_err(CoseError::SignatureError)?;
+            let sig = EcdsaSig::from_private_components(r, s)
+                .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
+            let sig = sig
+                .to_der()
+                .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
             let request = self
                 .client
@@ -203,8 +210,8 @@ impl SigningPrivateKey for KmsKey {
             .signature
             .ok_or_else(|| CoseError::UnsupportedError("No signature returned".to_string()))?;
 
-        let signature =
-            EcdsaSig::from_der(signature.as_ref()).map_err(CoseError::SignatureError)?;
+        let signature = EcdsaSig::from_der(signature.as_ref())
+            .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
         let key_length = self.sig_alg.key_length();
 

@@ -1294,7 +1294,10 @@ mod tests {
         use std::str::FromStr;
 
         use super::TEXT;
-        use crate::{crypto::kms::KmsKey, sign::*};
+        use crate::{
+            crypto::{kms::KmsKey, Openssl, SignatureAlgorithm},
+            sign::*,
+        };
 
         use std::env;
 
@@ -1316,7 +1319,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+                let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
                 // Tag 6.18 should be present
@@ -1324,8 +1327,8 @@ mod tests {
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
                 assert_eq!(
-                    cose_doc1.get_payload(None).unwrap(),
-                    cose_doc2.get_payload(Some(&kms_key)).unwrap()
+                    cose_doc1.get_payload::<Openssl>(None).unwrap(),
+                    cose_doc2.get_payload::<Openssl>(Some(&kms_key)).unwrap()
                 );
             })
             .await
@@ -1349,7 +1352,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let mut cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+                let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
 
                 // Mangle the signature
                 cose_doc1.signature[0] ^= 0xff;
@@ -1357,7 +1360,7 @@ mod tests {
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
-                match cose_doc2.get_payload(Some(&kms_key)) {
+                match cose_doc2.get_payload::<Openssl>(Some(&kms_key)) {
                     Ok(_) => panic!("Did not fail"),
                     Err(CoseError::UnverifiedSignature) => {}
                     Err(e) => {
@@ -1383,7 +1386,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+                let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
                 // Tag 6.18 should be present
@@ -1391,8 +1394,8 @@ mod tests {
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
                 assert_eq!(
-                    cose_doc1.get_payload(None).unwrap(),
-                    cose_doc2.get_payload(Some(&kms_key)).unwrap()
+                    cose_doc1.get_payload::<Openssl>(None).unwrap(),
+                    cose_doc2.get_payload::<Openssl>(Some(&kms_key)).unwrap()
                 );
             })
             .await
@@ -1413,7 +1416,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let mut cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
+                let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
 
                 // Mangle the signature
                 cose_doc1.signature[0] ^= 0xff;
@@ -1421,7 +1424,7 @@ mod tests {
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
-                match cose_doc2.get_payload(Some(&kms_key)) {
+                match cose_doc2.get_payload::<Openssl>(Some(&kms_key)) {
                     Ok(_) => panic!("Did not fail"),
                     Err(CoseError::UnverifiedSignature) => {}
                     Err(e) => {
