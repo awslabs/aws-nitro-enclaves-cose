@@ -1,4 +1,4 @@
-[![status]][actions] [![version]][crates.io] [![docs]][docs.rs]
+[![status]][actions] [![version]][crates.io] [![docs]][docs.rs] ![msrv]
 
 [status]: https://img.shields.io/github/workflow/status/awslabs/aws-nitro-enclaves-cose/CI/master
 [actions]: https://github.com/awslabs/aws-nitro-enclaves-cose/actions?query=branch%3Amain
@@ -6,6 +6,7 @@
 [crates.io]: https://crates.io/crates/aws-nitro-enclaves-cose
 [docs]: https://img.shields.io/docsrs/aws-nitro-enclaves-cose
 [docs.rs]: https://docs.rs/aws-nitro-enclaves-cose
+[msrv]: https://img.shields.io/badge/MSRV-1.58.1-blue
 
 ## COSE for AWS Nitro Enclaves
 
