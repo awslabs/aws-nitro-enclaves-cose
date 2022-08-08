@@ -5,7 +5,6 @@ use openssl::{
     ecdsa::EcdsaSig,
     pkey::{PKey, Public},
 };
-use tokio::runtime::Runtime;
 
 use aws_sdk_kms::{
     error::{VerifyError, VerifyErrorKind},
@@ -21,6 +20,8 @@ use crate::{
     error::CoseError,
 };
 
+use tokio::runtime::Handle;
+
 /// A reference to an AWS KMS key and client
 pub struct KmsKey {
     client: Client,
@@ -29,18 +30,9 @@ pub struct KmsKey {
     sig_alg: SignatureAlgorithm,
 
     public_key: Option<PKey<Public>>,
-
-    runtime: Runtime,
 }
 
 impl KmsKey {
-    fn new_runtime() -> Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Error creating tokio runtime")
-    }
-
     /// Create a new KmsKey, using the specified client and key_id.
     ///
     /// The sig_alg needs to be valid for the specified key.
@@ -58,10 +50,7 @@ impl KmsKey {
             client,
             key_id,
             sig_alg,
-
             public_key: None,
-
-            runtime: Self::new_runtime(),
         })
     }
 
@@ -80,14 +69,14 @@ impl KmsKey {
         key_id: String,
         public_key: Option<PKey<Public>>,
     ) -> Result<Self, CoseError> {
-        let runtime = Self::new_runtime();
+        let handle = Handle::current();
         let public_key = match public_key {
             Some(key) => key,
             None => {
                 // Retrieve public key from AWS
                 let request = client.get_public_key().key_id(key_id.clone()).send();
 
-                let public_key = runtime
+                let public_key = handle
                     .block_on(request)
                     .map_err(CoseError::AwsGetPublicKeyError)?
                     .public_key
@@ -116,8 +105,6 @@ impl KmsKey {
 
             sig_alg,
             public_key: Some(public_key),
-
-            runtime,
         })
     }
 
@@ -174,7 +161,8 @@ impl SigningPublicKey for KmsKey {
                 .signature(Blob::new(sig))
                 .send();
 
-            let reply = self.runtime.block_on(request);
+            let handle = Handle::current();
+            let reply = handle.block_on(request);
 
             match reply {
                 Ok(v) => Ok(v.signature_valid),
@@ -203,8 +191,8 @@ impl SigningPrivateKey for KmsKey {
             .signing_algorithm(self.get_sig_alg_spec())
             .send();
 
-        let signature = self
-            .runtime
+        let handle = Handle::current();
+        let signature = handle
             .block_on(request)
             .map_err(CoseError::AwsSignError)?
             .signature
