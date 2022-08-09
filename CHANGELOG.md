@@ -1,6 +1,11 @@
 
 # Changelog
 
+## 0.5.0
+* Support signing with an AWS KMS private key via the `key_kms` feature. (thank you @puiterwijk)
+* Abstract Openssl operations (thank you @raoulstrackx)
+* Update and declare MSRV to 1.58
+
 ## 0.4.0
 * Abstract signing support: provide traits to abstract private and public keys.
 * Support signing with a TPM-backed private key via the `key_tpm` feature.
