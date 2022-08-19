@@ -8,21 +8,30 @@ on:
     branches:
       - main
 
-
 env:
     RUSTFLAGS: -Dwarnings
+    AWS_KMS_TEST_KEY_ARN: arn:aws:kms:us-east-1:667861386598:key/d7da2f8d-2bdf-4c62-963f-16c921522fee
+    TEST_KEY_SIG_ALG: ES384
 
 jobs:
     test:
         name: Test on rust ${{matrix.rust}}  (keys ${{ matrix.key_feature_set }})
         runs-on: ubuntu-latest
+        permissions:
+            id-token: write
+            contents: read
         strategy:
             matrix:
                 rust: [1.58.1, stable, nightly]
                 key_feature_set:
                   - key_openssl_pkey
+                  - key_kms
         steps:
-        - uses: actions/checkout@v2
+        - uses: actions/checkout@v3
+        - uses: aws-actions/configure-aws-credentials@v1
+          with:
+            role-to-assume: ${{ secrets.AWS_TEST_ROLE_ARN }}
+            aws-region: us-east-1
         - uses: dtolnay/rust-toolchain@master
           with:
               toolchain: ${{matrix.rust}}
