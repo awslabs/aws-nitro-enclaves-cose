@@ -11,6 +11,7 @@ on:
 env:
     RUSTFLAGS: -Dwarnings
     AWS_KMS_TEST_KEY_ARN: arn:aws:kms:us-east-1:667861386598:key/d7da2f8d-2bdf-4c62-963f-16c921522fee
+    AWS_KMS_TEST_ROLE_ARN: arn:aws:iam::667861386598:role/aws-nitro-enclaves-cose-tests
     TEST_KEY_SIG_ALG: ES384
 
 jobs:
@@ -30,7 +31,7 @@ jobs:
         - uses: actions/checkout@v3
         - uses: aws-actions/configure-aws-credentials@v1
           with:
-            role-to-assume: ${{ secrets.AWS_TEST_ROLE_ARN }}
+            role-to-assume: ${{ env.AWS_KMS_TEST_ROLE_ARN }}
             aws-region: us-east-1
         - uses: dtolnay/rust-toolchain@master
           with:
