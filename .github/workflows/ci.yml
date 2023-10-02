@@ -18,7 +18,7 @@ jobs:
         runs-on: ubuntu-latest
         strategy:
             matrix:
-                rust: [1.58.1, stable, nightly]
+                rust: [1.67, stable, nightly]
                 key_feature_set:
                   - key_openssl_pkey
                   - key_kms
