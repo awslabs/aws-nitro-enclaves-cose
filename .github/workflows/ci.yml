@@ -21,12 +21,15 @@ jobs:
                 rust: [1.58.1, stable, nightly]
                 key_feature_set:
                   - key_openssl_pkey
+                  - key_kms
         steps:
         - uses: actions/checkout@v2
         - uses: dtolnay/rust-toolchain@master
           with:
               toolchain: ${{matrix.rust}}
-        - run: cargo test --all --no-default-features --features ${{ matrix.key_feature_set }}
+        - run: |
+            cargo test --all --no-default-features --features ${{ matrix.key_feature_set }} \
+                -- --skip sign::tests::kms # Requires AWS creds, skip them
 
     test_fedora:
         name: Test on Fedora
