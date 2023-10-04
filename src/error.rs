@@ -5,6 +5,12 @@ use std::fmt;
 
 use serde_cbor::Error as CborError;
 
+#[cfg(feature = "key_kms")]
+use aws_sdk_kms::{
+    error::SdkError, operation::get_public_key::GetPublicKeyError, operation::sign::SignError,
+    operation::verify::VerifyError,
+};
+
 #[derive(Debug)]
 /// Aggregation of all error types returned by this library
 pub enum CoseError {
@@ -35,13 +41,13 @@ pub enum CoseError {
     TpmError(tss_esapi::Error),
     /// AWS sign error occured
     #[cfg(feature = "key_kms")]
-    AwsSignError(aws_sdk_kms::types::SdkError<aws_sdk_kms::error::SignError>),
+    AwsSignError(SdkError<SignError>),
     /// AWS verify error occured
     #[cfg(feature = "key_kms")]
-    AwsVerifyError(aws_sdk_kms::types::SdkError<aws_sdk_kms::error::VerifyError>),
+    AwsVerifyError(SdkError<VerifyError>),
     /// AWS GetPublicKey error occured
     #[cfg(all(feature = "key_kms", feature = "key_openssl_pkey"))]
-    AwsGetPublicKeyError(aws_sdk_kms::types::SdkError<aws_sdk_kms::error::GetPublicKeyError>),
+    AwsGetPublicKeyError(SdkError<GetPublicKeyError>),
 }
 
 impl fmt::Display for CoseError {

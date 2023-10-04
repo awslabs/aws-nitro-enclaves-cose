@@ -18,22 +18,25 @@ jobs:
         runs-on: ubuntu-latest
         strategy:
             matrix:
-                rust: [1.58.1, stable, nightly]
+                rust: [1.67, stable, nightly]
                 key_feature_set:
                   - key_openssl_pkey
+                  - key_kms
         steps:
-        - uses: actions/checkout@v2
+        - uses: actions/checkout@v4
         - uses: dtolnay/rust-toolchain@master
           with:
               toolchain: ${{matrix.rust}}
-        - run: cargo test --all --no-default-features --features ${{ matrix.key_feature_set }}
+        - run: |
+            cargo test --all --no-default-features --features ${{ matrix.key_feature_set }} \
+                -- --skip sign::tests::kms # Requires AWS creds, skip them
 
     test_fedora:
         name: Test on Fedora
         runs-on: ubuntu-latest
         container: fedora:latest
         steps:
-        - uses: actions/checkout@v2
+        - uses: actions/checkout@v4
         - name: Install dependencies
           run: |
               dnf install -y \
@@ -65,7 +68,7 @@ jobs:
         name: Clippy
         runs-on: ubuntu-latest
         steps:
-        - uses: actions/checkout@v2
+        - uses: actions/checkout@v4
         - uses: dtolnay/rust-toolchain@stable
         - run: rustup component add clippy
         - run: cargo clippy --all
@@ -74,7 +77,7 @@ jobs:
         name: Rustfmt
         runs-on: ubuntu-latest
         steps:
-        - uses: actions/checkout@v2
+        - uses: actions/checkout@v4
         - uses: dtolnay/rust-toolchain@stable
         - run: rustup component add rustfmt
         - run: cargo fmt --all -- --check

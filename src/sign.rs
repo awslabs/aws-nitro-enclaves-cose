@@ -62,8 +62,10 @@ pub struct SigStructure(
     #[serde(skip_serializing_if = "Option::is_none")]
     Option<ByteBuf>,
     /// external_aad : bstr,
+    #[serde(default)]
     ByteBuf,
     /// payload : bstr
+    #[serde(default)]
     ByteBuf,
 );
 
