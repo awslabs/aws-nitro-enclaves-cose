@@ -8,7 +8,7 @@ keywords = ["COSE"]
 categories = ["cryptography"]
 repository = "https://github.com/awslabs/aws-nitro-enclaves-cose"
 description = "This library aims to provide a safe Rust implementation of COSE, with COSE Sign1 currently implemented."
-rust-version = "1.58"
+rust-version = "1.67"
 
 [dependencies]
 serde_cbor = { version="0.11", features = ["tags"] }
@@ -17,8 +17,8 @@ serde_bytes = { version = "0.11", features = ["std"] }
 serde_with = { version = "1.5", default_features = false }
 openssl = { version = "0.10", optional = true }
 tss-esapi = { version = "6.1", optional = true }
-aws-config = { version = "0.54", optional = true }
-aws-sdk-kms = { version = "0.16", optional = true }
+aws-config = { version = "0.56", optional = true }
+aws-sdk-kms = { version = "0.31", optional = true }
 tokio = { version = "1.20", features = ["rt", "macros"], optional = true }
 
 [dependencies.serde]

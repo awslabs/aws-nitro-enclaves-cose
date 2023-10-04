@@ -6,7 +6,7 @@
 [crates.io]: https://crates.io/crates/aws-nitro-enclaves-cose
 [docs]: https://img.shields.io/docsrs/aws-nitro-enclaves-cose
 [docs.rs]: https://docs.rs/aws-nitro-enclaves-cose
-[msrv]: https://img.shields.io/badge/MSRV-1.58.1-blue
+[msrv]: https://img.shields.io/badge/MSRV-1.67.1-blue
 
 ## COSE for AWS Nitro Enclaves
 
