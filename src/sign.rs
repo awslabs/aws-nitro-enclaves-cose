@@ -1165,10 +1165,11 @@ mod tests {
             attributes::SessionAttributesBuilder,
             constants::SessionType,
             interface_types::{
-                algorithm::HashingAlgorithm, ecc::EccCurve, resource_handles::Hierarchy,
+                algorithm::EccSchemeAlgorithm, algorithm::HashingAlgorithm, ecc::EccCurve,
+                resource_handles::Hierarchy,
             },
-            structures::SymmetricDefinition,
-            utils::{create_unrestricted_signing_ecc_public, AsymSchemeUnion},
+            structures::{EccScheme, SymmetricDefinition},
+            utils::create_unrestricted_signing_ecc_public,
             Context, Tcti,
         };
 
@@ -1199,8 +1200,13 @@ mod tests {
             let prim_key = tpm_context
                 .create_primary(
                     Hierarchy::Owner,
-                    &create_unrestricted_signing_ecc_public(
-                        AsymSchemeUnion::ECDSA(HashingAlgorithm::Sha256),
+                    create_unrestricted_signing_ecc_public(
+                        EccScheme::create(
+                            EccSchemeAlgorithm::EcDsa,
+                            Some(HashingAlgorithm::Sha256),
+                            None,
+                        )
+                        .expect("Error creating ECC scheme"),
                         EccCurve::NistP256,
                     )
                     .expect("Error creating TPM2B_PUBLIC"),
@@ -1257,8 +1263,13 @@ mod tests {
             let prim_key = tpm_context
                 .create_primary(
                     Hierarchy::Owner,
-                    &create_unrestricted_signing_ecc_public(
-                        AsymSchemeUnion::ECDSA(HashingAlgorithm::Sha256),
+                    create_unrestricted_signing_ecc_public(
+                        EccScheme::create(
+                            EccSchemeAlgorithm::EcDsa,
+                            Some(HashingAlgorithm::Sha256),
+                            None,
+                        )
+                        .expect("Error creating ECC scheme"),
                         EccCurve::NistP256,
                     )
                     .expect("Error creating TPM2B_PUBLIC"),
