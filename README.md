@@ -1,6 +1,6 @@
 [![status]][actions] [![version]][crates.io] [![docs]][docs.rs] ![msrv]
 
-[status]: https://img.shields.io/github/workflow/status/awslabs/aws-nitro-enclaves-cose/CI/master
+[status]: https://img.shields.io/github/actions/workflow/status/awslabs/aws-nitro-enclaves-cose/ci.yml?branch=main
 [actions]: https://github.com/awslabs/aws-nitro-enclaves-cose/actions?query=branch%3Amain
 [version]: https://img.shields.io/crates/v/aws-nitro-enclaves-cose.svg
 [crates.io]: https://crates.io/crates/aws-nitro-enclaves-cose
