@@ -1,6 +1,9 @@
 //! TPM implementation for cryptography
 
-use std::{cell::RefCell, convert::TryInto};
+use std::{
+    cell::RefCell,
+    convert::{TryFrom, TryInto},
+};
 
 use tss_esapi::{
     constants::{
@@ -9,8 +12,8 @@ use tss_esapi::{
     },
     handles::KeyHandle,
     interface_types::algorithm::HashingAlgorithm,
+    structures::{Digest, EccParameter, EccSignature, Signature},
     tss2_esys::{TPMT_PUBLIC, TPMT_SIG_SCHEME, TPMT_TK_HASHCHECK},
-    utils::{AsymSchemeUnion, Signature, SignatureData},
     Context, Error as tpm_error,
 };
 
@@ -94,8 +97,7 @@ impl TpmKey {
         let (key_public, _, _) = context
             .read_public(key_handle)
             .map_err(CoseError::TpmError)?;
-        let (parameters, hash_alg, key_length) =
-            TpmKey::public_to_parameters(key_public.publicArea)?;
+        let (parameters, hash_alg, key_length) = TpmKey::public_to_parameters(key_public.into())?;
 
         Ok(TpmKey {
             context: RefCell::new(context),
@@ -117,21 +119,32 @@ impl SigningPublicKey for TpmKey {
         // Recover the R and S factors from the signature contained in the object
         let (bytes_r, bytes_s) = signature.split_at(self.key_length);
 
-        let signature = Signature {
-            scheme: AsymSchemeUnion::ECDSA(self.hash_alg),
-            signature: SignatureData::EcdsaSignature {
-                r: bytes_r.to_vec(),
-                s: bytes_s.to_vec(),
-            },
-        };
+        let signature = Signature::EcDsa(
+            EccSignature::create(
+                self.hash_alg,
+                EccParameter::try_from(bytes_r.to_vec()).map_err(|_| {
+                    CoseError::UnsupportedError(
+                        "Unable to convert R signature component".to_string(),
+                    )
+                })?,
+                EccParameter::try_from(bytes_s.to_vec()).map_err(|_| {
+                    CoseError::UnsupportedError(
+                        "Unable to convert S signature component".to_string(),
+                    )
+                })?,
+            )
+            .map_err(|_| {
+                CoseError::UnsupportedError("Unable to create ECC signature".to_string())
+            })?,
+        );
 
-        let data = data.try_into().map_err(|_| {
+        let data = Digest::try_from(data).map_err(|_| {
             CoseError::UnsupportedError("Invalid digest passed to verify".to_string())
         })?;
 
         let mut context = self.context.borrow_mut();
 
-        match context.verify_signature(self.key_handle, &data, signature) {
+        match context.verify_signature(self.key_handle, data, signature) {
             Ok(_) => Ok(true),
             Err(tpm_error::Tss2Error(Tss2ResponseCode::FormatOne(FormatOneResponseCode(
                 TSS2_RC_SIGNATURE,
@@ -153,8 +166,7 @@ impl SigningPrivateKey for TpmKey {
             digest: Default::default(),
         };
 
-        let data = data
-            .try_into()
+        let data = Digest::try_from(data)
             .map_err(|_| CoseError::UnsupportedError("Tried to sign invalid data".to_string()))?;
 
         let signature = {
@@ -163,17 +175,23 @@ impl SigningPrivateKey for TpmKey {
             context
                 .sign(
                     self.key_handle,
-                    &data,
-                    scheme,
+                    data,
+                    scheme.try_into().map_err(|_| {
+                        CoseError::UnsupportedError(
+                            "Unable to convert signature scheme".to_string(),
+                        )
+                    })?,
                     validation.try_into().expect("Unable to convert validation"),
                 )
                 .map_err(CoseError::TpmError)?
         };
 
-        match &signature.signature {
-            SignatureData::EcdsaSignature { r, s } => {
-                Ok(super::merge_ec_signature(r, s, self.key_length))
-            }
+        match &signature {
+            Signature::EcDsa(sig) => Ok(super::merge_ec_signature(
+                sig.signature_r(),
+                sig.signature_s(),
+                self.key_length,
+            )),
             _ => Err(CoseError::UnsupportedError(
                 "Unsupported signature data returned".to_string(),
             )),
