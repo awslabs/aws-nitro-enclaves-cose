@@ -1312,11 +1312,12 @@ mod tests {
             sign::*,
         };
 
+        use aws_config::BehaviorVersion;
         use std::env;
 
         #[tokio::test]
         async fn cose_sign_kms() {
-            let config = aws_config::from_env().load().await;
+            let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
             let kms_client = aws_sdk_kms::Client::new(&config);
 
             tokio::task::spawn_blocking(|| {
@@ -1350,7 +1351,7 @@ mod tests {
 
         #[tokio::test]
         async fn cose_sign_kms_invalid_signature() {
-            let config = aws_config::from_env().load().await;
+            let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
             let kms_client = aws_sdk_kms::Client::new(&config);
 
             tokio::task::spawn_blocking(|| {
@@ -1388,7 +1389,7 @@ mod tests {
         #[cfg(feature = "key_openssl_pkey")]
         #[tokio::test]
         async fn cose_sign_kms_public_key() {
-            let config = aws_config::from_env().load().await;
+            let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
             let kms_client = aws_sdk_kms::Client::new(&config);
 
             let key_id = env::var("AWS_KMS_TEST_KEY_ARN").expect("Please set AWS_KMS_TEST_KEY_ARN");
@@ -1418,7 +1419,7 @@ mod tests {
         #[cfg(feature = "key_openssl_pkey")]
         #[tokio::test]
         async fn cose_sign_kms_public_key_invalid_signature() {
-            let config = aws_config::from_env().load().await;
+            let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
             let kms_client = aws_sdk_kms::Client::new(&config);
 
             let key_id = env::var("AWS_KMS_TEST_KEY_ARN").expect("Please set AWS_KMS_TEST_KEY_ARN");
