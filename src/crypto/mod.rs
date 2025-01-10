@@ -208,14 +208,14 @@ impl FromStr for SignatureAlgorithm {
     }
 }
 
-impl ToString for SignatureAlgorithm {
-    fn to_string(&self) -> String {
-        match self {
+impl std::fmt::Display for SignatureAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let string_name = match self {
             SignatureAlgorithm::ES256 => "ES256",
             SignatureAlgorithm::ES384 => "ES384",
             SignatureAlgorithm::ES512 => "ES512",
-        }
-        .to_string()
+        };
+        write!(f, "{}", string_name)
     }
 }
 
