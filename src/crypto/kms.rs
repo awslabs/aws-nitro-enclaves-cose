@@ -52,6 +52,8 @@ impl KmsKey {
 
     /// Create a new KmsKey, using the specified client and key_id.
     ///
+    /// This method must be called from a Tokio context, otherwise the call panics.
+    ///
     /// The sig_alg needs to be valid for the specified key.
     /// This version will use local signature verification.
     /// If no public key is passed in, the key will be retrieved with GetPublicKey.
@@ -123,6 +125,21 @@ impl SigningPublicKey for KmsKey {
         Ok((self.sig_alg, self.sig_alg.suggested_message_digest()))
     }
 
+    /// Verifies a digital signature.
+    ///
+    /// If KMS is used for verification, this method must be called from a Tokio context,
+    /// otherwise the call panics.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A byte slice containing the data to verify
+    /// * `signature` - A byte slice containing the signature to verify against the data
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the signature is valid for the given data
+    /// * `Ok(false)` - If the signature is invalid or verification fails gracefully
+    /// * `Err(CoseError)` - If an error occurs during verification
     fn verify(&self, data: &[u8], signature: &[u8]) -> Result<bool, CoseError> {
         if self.public_key.is_some() {
             #[cfg(feature = "key_openssl_pkey")]
@@ -172,6 +189,18 @@ impl SigningPublicKey for KmsKey {
 }
 
 impl SigningPrivateKey for KmsKey {
+    /// Signs data using AWS KMS and formats the signature according to the ECDSA specification.
+    ///
+    /// This method must be called from a Tokio context, otherwise the call panics.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A byte slice containing the data to be signed
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<u8>)` - A vector containing the formatted signature bytes
+    /// * `Err(CoseError)` - If signing or signature formatting fails
     fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CoseError> {
         let request = self
             .client
