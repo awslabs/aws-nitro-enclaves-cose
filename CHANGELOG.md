@@ -1,6 +1,21 @@
 
 # Changelog
 
+## 0.5.3
+* Bumped `aws-sdk-kms` to 1.22
+* Bumped MSRV to 1.71
+* Updated docstrings to mention the need in Tokio runtime for non-local key
+use-cases
+
+## 0.5.2
+* Bumped `serde_with` to 3.3
+* Bumped `tss-esapi` to 7.5
+* Bumped `aws-sdk-kms` to 1.20
+* Bumped MSRV to 1.68
+
+## 0.5.1
+* Fixed serde build errors after update
+
 ## 0.5.0
 * Support signing with an AWS KMS private key via the `key_kms` feature. (thank you @puiterwijk)
 * Abstract Openssl operations (thank you @raoulstrackx)
