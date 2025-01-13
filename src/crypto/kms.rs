@@ -16,7 +16,20 @@ use crate::{
     error::CoseError,
 };
 
-use tokio::runtime::Handle;
+use tokio::runtime::{Builder, Handle};
+
+fn get_runtime_handle() -> Result<Handle, CoseError> {
+    // Try to get the current handle first - this is the fast path
+    Handle::try_current()
+        .or_else(|_| {
+            // Only build a new runtime if we need to
+            Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map(|runtime| runtime.handle().clone())
+                .map_err(|e| CoseError::RuntimeError(e.to_string()))
+        })
+}
 
 /// A reference to an AWS KMS key and client
 pub struct KmsKey {
@@ -65,10 +78,11 @@ impl KmsKey {
         key_id: String,
         public_key: Option<PKey<Public>>,
     ) -> Result<Self, CoseError> {
-        let handle = Handle::current();
         let public_key = match public_key {
             Some(key) => key,
             None => {
+                let handle = get_runtime_handle()?;
+
                 // Retrieve public key from AWS
                 let request = client.get_public_key().key_id(key_id.clone()).send();
 
@@ -157,7 +171,7 @@ impl SigningPublicKey for KmsKey {
                 .signature(Blob::new(sig))
                 .send();
 
-            let handle = Handle::current();
+            let handle = get_runtime_handle()?;
             let reply = handle.block_on(request);
 
             match reply {
@@ -173,6 +187,8 @@ impl SigningPublicKey for KmsKey {
 
 impl SigningPrivateKey for KmsKey {
     fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CoseError> {
+        let handle = get_runtime_handle()?;
+
         let request = self
             .client
             .sign()
@@ -182,7 +198,7 @@ impl SigningPrivateKey for KmsKey {
             .signing_algorithm(self.get_sig_alg_spec())
             .send();
 
-        let handle = Handle::current();
+        
         let signature = handle
             .block_on(request)
             .map_err(CoseError::AwsSignError)?

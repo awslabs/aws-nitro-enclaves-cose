@@ -1417,6 +1417,32 @@ mod tests {
         }
 
         #[cfg(feature = "key_openssl_pkey")]
+        #[test]
+        fn cose_sign_kms_public_key_sync() {
+            let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+            let kms_client = aws_sdk_kms::Client::new(&config);
+
+            let key_id = env::var("AWS_KMS_TEST_KEY_ARN").expect("Please set AWS_KMS_TEST_KEY_ARN");
+
+            let kms_key = KmsKey::new_with_public_key(kms_client, key_id, None)
+                .expect("Error building kms_key");
+
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
+            let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+
+            // Tag 6.18 should be present
+            assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+            let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+            assert_eq!(
+                cose_doc1.get_payload::<Openssl>(None).unwrap(),
+                cose_doc2.get_payload::<Openssl>(Some(&kms_key)).unwrap()
+            );
+        }
+
+        #[cfg(feature = "key_openssl_pkey")]
         #[tokio::test]
         async fn cose_sign_kms_public_key_invalid_signature() {
             let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
