@@ -27,7 +27,7 @@ features = ["derive"]
 [dev-dependencies]
 hex = "0.4"
 aws-config = { version = "<=1.5" }
-aws-sdk-sso = { version = "<= 1.21.0" }
+aws-sdk-sso = { version = "<= 1.53.0" }
 aws-sdk-ssooidc = { version = "<= 1.21.0" }
 aws-sdk-sts = { version = "<= 1.21.0" }
 aws-smithy-runtime = { version = "<=1.6" }
