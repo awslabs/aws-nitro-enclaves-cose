@@ -15,11 +15,11 @@ use aws_sdk_kms::{
 /// Aggregation of all error types returned by this library
 pub enum CoseError {
     /// Failed to generate random bytes
-    EntropyError(Box<dyn Error>),
+    EntropyError(Box<dyn Error + Send + Sync>),
     /// Computation of a cryptographic hash failed
-    HashingError(Box<dyn Error>),
+    HashingError(Box<dyn Error + Send + Sync>),
     /// Signature could not be performed due to OpenSSL error.
-    SignatureError(Box<dyn Error>),
+    SignatureError(Box<dyn Error + Send + Sync>),
     /// This feature is not yet fully implemented according
     /// to the spec.
     UnimplementedError,
@@ -35,7 +35,7 @@ pub enum CoseError {
     /// Tag is missing or incorrect.
     TagError(Option<u64>),
     /// Encryption could not be performed due to OpenSSL error.
-    EncryptionError(Box<dyn Error>),
+    EncryptionError(Box<dyn Error + Send + Sync>),
     /// TPM error occured
     #[cfg(feature = "key_tpm")]
     TpmError(tss_esapi::Error),
