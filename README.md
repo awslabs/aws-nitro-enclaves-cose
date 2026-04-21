@@ -14,7 +14,15 @@ This library aims to provide a safe Rust implementation of COSE.
 Currently, only COSE Sign1 is implemented, with the ability to sign and verify
 COSE Sign1 objects.
 
-It uses openssl to provide the required crypto primitives.
+Three crypto backends are available as mutually exclusive Cargo features:
+
+| Feature | Default | Notes |
+|---------|---------|-------|
+| `openssl` | ✓ | Full ES256/ES384/ES512, AES-192-GCM, PEM loading |
+| `aws-lc-rs` | | Full ES256/ES384/ES512, AES-192-GCM; compatible with `key_kms` |
+| `ring` | | ES256/ES384 only (no P-521), no AES-192-GCM; not compatible with `key_kms` |
+
+Select a backend in your `Cargo.toml`, e.g. `aws-nitro-enclaves-cose = { version = "0.6", default-features = false, features = ["aws-lc-rs"] }`.
 
 ## Security
 

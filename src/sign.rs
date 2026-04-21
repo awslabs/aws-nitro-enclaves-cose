@@ -5,7 +5,7 @@ use serde_bytes::ByteBuf;
 use serde_cbor::Error as CborError;
 use serde_cbor::Value as CborValue;
 
-use crate::crypto::{Hash, SigningPrivateKey, SigningPublicKey};
+use crate::crypto::{ActiveBackend, Hash, SigningPrivateKey, SigningPublicKey};
 use crate::error::CoseError;
 use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 
@@ -139,7 +139,7 @@ impl SigStructure {
 ///      signature : bstr
 ///  ]
 ///
-///  # https://tools.ietf.org/html/rfc8152#section-3
+///  # <https://tools.ietf.org/html/rfc8152#section-3>
 ///
 ///  Headers = (
 ///       protected : empty_or_serialized_map,
@@ -260,7 +260,7 @@ impl CoseSign1 {
     /// Creates a CoseSign1 structure from the given payload and some unprotected data in the form
     /// of a HeaderMap. Signs the content with the given key using the recommedations from the spec
     /// and sets the protected part of the document to reflect the algorithm used.
-    pub fn new<H: Hash>(
+    pub fn new(
         payload: &[u8],
         unprotected: &HeaderMap,
         key: &dyn SigningPrivateKey,
@@ -270,19 +270,19 @@ impl CoseSign1 {
         let mut protected = HeaderMap::new();
         protected.insert(1.into(), (sig_alg as i8).into());
 
-        Self::new_with_protected::<H>(payload, &protected, unprotected, key)
+        Self::new_with_protected(payload, &protected, unprotected, key)
     }
 
     /// Creates a CoseSign1 structure from the given payload and some protected and unprotected data
     /// in the form of a HeaderMap. Signs the content with the given key using the recommedations
     /// from the spec and sets the algorithm used into the protected header.
-    pub fn new_with_protected<H: Hash>(
+    pub fn new_with_protected(
         payload: &[u8],
         protected: &HeaderMap,
         unprotected: &HeaderMap,
         key: &dyn SigningPrivateKey,
     ) -> Result<Self, CoseError> {
-        let (_, digest) = key.get_parameters()?;
+        let (_, digest_alg) = key.get_parameters()?;
 
         // Create the SigStruct to sign
         let protected_bytes =
@@ -291,15 +291,17 @@ impl CoseSign1 {
         let sig_structure = SigStructure::new_sign1(&protected_bytes, payload)
             .map_err(CoseError::SerializationError)?;
 
-        let struct_digest = H::hash(
-            digest,
-            &sig_structure
-                .as_bytes()
-                .map_err(CoseError::SerializationError)?,
-        )
-        .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
+        let struct_bytes = sig_structure
+            .as_bytes()
+            .map_err(CoseError::SerializationError)?;
 
-        let signature = key.sign(struct_digest.as_ref())?;
+        let sign_input = if key.hashes_internally() {
+            struct_bytes
+        } else {
+            ActiveBackend::hash(digest_alg, &struct_bytes)?
+        };
+
+        let signature = key.sign(&sign_input)?;
 
         Ok(CoseSign1 {
             protected: ByteBuf::from(protected_bytes),
@@ -355,11 +357,11 @@ impl CoseSign1 {
 
     /// This checks the signature included in the structure against the given public key and
     /// returns true if the signature matches the given key.
-    pub fn verify_signature<H: Hash>(&self, key: &dyn SigningPublicKey) -> Result<bool, CoseError> {
+    pub fn verify_signature(&self, key: &dyn SigningPublicKey) -> Result<bool, CoseError> {
         // In theory, the digest itself does not have to match the curve, however,
         // this is the recommendation and the spec does not even provide a way to specify
         // another digest type, so, signatures will fail if this is done differently
-        let (signature_alg, digest) = key.get_parameters()?;
+        let (signature_alg, digest_alg) = key.get_parameters()?;
 
         // The spec reads as follows:
         //    alg:  This parameter is used to indicate the algorithm used for the
@@ -401,25 +403,27 @@ impl CoseSign1 {
         let sig_structure = SigStructure::new_sign1(&self.protected, &self.payload)
             .map_err(CoseError::SerializationError)?;
 
-        let struct_digest = H::hash(
-            digest,
-            &sig_structure
-                .as_bytes()
-                .map_err(CoseError::SerializationError)?,
-        )
-        .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
+        let struct_bytes = sig_structure
+            .as_bytes()
+            .map_err(CoseError::SerializationError)?;
 
-        key.verify(struct_digest.as_ref(), &self.signature)
+        let verify_input = if key.hashes_internally() {
+            struct_bytes
+        } else {
+            ActiveBackend::hash(digest_alg, &struct_bytes)?
+        };
+
+        key.verify(&verify_input, &self.signature)
     }
 
     /// This gets the `payload` and `protected` data of the document.
     /// If `key` is provided, it only gets the data if the signature is correctly verified,
     /// otherwise returns `Err(CoseError::UnverifiedSignature)`.
-    pub fn get_protected_and_payload<H: Hash>(
+    pub fn get_protected_and_payload(
         &self,
         key: Option<&dyn SigningPublicKey>,
     ) -> Result<(HeaderMap, Vec<u8>), CoseError> {
-        if key.is_some() && !self.verify_signature::<H>(key.unwrap())? {
+        if key.is_some() && !self.verify_signature(key.unwrap())? {
             return Err(CoseError::UnverifiedSignature);
         }
         let protected: HeaderMap =
@@ -430,11 +434,11 @@ impl CoseSign1 {
     /// This gets the `payload` of the document. If `key` is provided, it only gets the payload
     /// if the signature is correctly verified, otherwise returns
     /// `Err(CoseError::UnverifiedSignature)`.
-    pub fn get_payload<H: Hash>(
+    pub fn get_payload(
         &self,
         key: Option<&dyn SigningPublicKey>,
     ) -> Result<Vec<u8>, CoseError> {
-        if key.is_some() && !self.verify_signature::<H>(key.unwrap())? {
+        if key.is_some() && !self.verify_signature(key.unwrap())? {
             return Err(CoseError::UnverifiedSignature);
         }
         Ok(self.payload.to_vec())
@@ -451,6 +455,194 @@ mod tests {
 
     // Public domain work: Pride and Prejudice by Jane Austen, taken from https://www.gutenberg.org/files/1342/1342.txt
     const TEXT: &[u8] = b"It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.";
+
+    // Static test key coordinates — shared across all crypto-backend test modules
+    // EC P-256 / PRIME256V1
+    const EC256_X: &str = "9ff7423a1aace5f3e33dfaeda2c7744e3d15c2a4f6382386c93fa60c1bdb260c";
+    const EC256_Y: &str = "3489e6b132f36e5ece948e73bd44231a1c3d0dacf566712a44fe8a9835d5b6fe";
+    const EC256_D: &str = "8e21d79fb6955dbe7bb592d92de4690f8bf75dc1495b2433ba78d5828e1f933f";
+    // EC P-384 / SECP384R1
+    const EC384_X: &str = "5a829f62f2f4f095c0e922719285b4b981c677912870a413137a5d7319916fa8584a6036951d06ffeae99ca73ab1a2dc";
+    const EC384_Y: &str = "e1b76e08cb20d6afcea7423f8b49ec841dde6f210a6174750bf8136a315494224df153184557a6c29a1d7994804f604c";
+    const EC384_D: &str = "55c6aa815a31741bc37f0ffddea73af2397bad640816ef22bfb689efc1b6cc682a73f7e5a657248e3abad500e46d5afc";
+    // EC P-521 / SECP521R1
+    const EC512_X: &str = "004365ee31a93b6e69b2c895890aaae14194cd84601bbb59587ad08ab59605227dc7b34288e6471b0f06050763b88b4fb017f279c86030b0069100401e4016a3be8a";
+    const EC512_Y: &str = "00792d772bf93cd965027df2df02d3f99ea1c4ecd18c20738ebae66854fd3afcd2ea4e902bcd37a4d2a5c639caee71513acaf7d8f7ffa11042257c5d8c6974095713";
+    const EC512_D: &str = "007c6fd88271bcd6c5d6bada258691a27700abeff0ad86891a27f93a73f009477c53b4e069db544429ad8220d18813f5f3ab90946ebdf4f41ca929999709f7c489e8";
+    // RFC 8152 Appendix C key with kid "11" (P-256)
+    const RFC8152_KID11_X: &str = "bac5b11cad8f99f9c72b05cf4b9e26d244dc189f745228255a219a86d6a09eff";
+    const RFC8152_KID11_Y: &str = "20138bf82dc1b6d562be0fa54ab7804a3a64b6d72ccfed6b6fb6ed28bbfc117e";
+
+    // COSE_Sign1 test vectors — validated against COSE-C implementation
+    // P-256, CBOR tag 18 present
+    const COSE_SIGN1_EC256_TAGGED: &[u8] = &[
+        0xd9, 0x00, 0x12, /* tag 18 */
+        0x84, /* Protected: {1: -7} */
+        0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
+        0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
+        0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
+        0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
+        0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
+        0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
+        0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
+        0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
+        0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
+        0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
+        0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* Signature - length 32 x 2 */
+        0x58, 0x40, /* R: */
+        0x6E, 0x6D, 0xF6, 0x54, 0x89, 0xEA, 0x3B, 0x01, 0x88, 0x33, 0xF5, 0xFC, 0x4F, 0x84,
+        0xF8, 0x1B, 0x4D, 0x5E, 0xFD, 0x5A, 0x09, 0xD5, 0xC6, 0x2F, 0x2E, 0x92, 0x38, 0x5D,
+        0xCE, 0x31, 0xE2, 0xD1, /* S: */
+        0x5A, 0x53, 0xA9, 0xF0, 0x75, 0xE8, 0xFB, 0x39, 0x66, 0x9F, 0xCD, 0x4E, 0xB5, 0x22,
+        0xC8, 0x5C, 0x92, 0x77, 0x45, 0x2F, 0xA8, 0x57, 0xF5, 0xFE, 0x37, 0x9E, 0xDD, 0xEF,
+        0x0F, 0xAB, 0x3C, 0xDD,
+    ];
+    // P-256, no tag
+    const COSE_SIGN1_EC256_UNTAGGED: &[u8] = &[
+        0x84, /* Protected: {1: -7} */
+        0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
+        0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
+        0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
+        0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
+        0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
+        0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
+        0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
+        0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
+        0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
+        0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
+        0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* Signature - length 32 x 2 */
+        0x58, 0x40, /* R: */
+        0x6E, 0x6D, 0xF6, 0x54, 0x89, 0xEA, 0x3B, 0x01, 0x88, 0x33, 0xF5, 0xFC, 0x4F, 0x84,
+        0xF8, 0x1B, 0x4D, 0x5E, 0xFD, 0x5A, 0x09, 0xD5, 0xC6, 0x2F, 0x2E, 0x92, 0x38, 0x5D,
+        0xCE, 0x31, 0xE2, 0xD1, /* S: */
+        0x5A, 0x53, 0xA9, 0xF0, 0x75, 0xE8, 0xFB, 0x39, 0x66, 0x9F, 0xCD, 0x4E, 0xB5, 0x22,
+        0xC8, 0x5C, 0x92, 0x77, 0x45, 0x2F, 0xA8, 0x57, 0xF5, 0xFE, 0x37, 0x9E, 0xDD, 0xEF,
+        0x0F, 0xAB, 0x3C, 0xDD,
+    ];
+    // P-384, no tag
+    const COSE_SIGN1_EC384: &[u8] = &[
+        0x84, /* Protected: {1: -35} */
+        0x44, 0xA1, 0x01, 0x38, 0x22, /* Unprotected: {4: '11'} */
+        0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
+        0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
+        0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
+        0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
+        0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
+        0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
+        0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
+        0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
+        0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
+        0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* signature - length 48 x 2 */
+        0x58, 0x60, /* R: */
+        0xCD, 0x42, 0xD2, 0x76, 0x32, 0xD5, 0x41, 0x4E, 0x4B, 0x54, 0x5C, 0x95, 0xFD, 0xE6,
+        0xE3, 0x50, 0x5B, 0x93, 0x58, 0x0F, 0x4B, 0x77, 0x31, 0xD1, 0x4A, 0x86, 0x52, 0x31,
+        0x75, 0x26, 0x6C, 0xDE, 0xB2, 0x4A, 0xFF, 0x2D, 0xE3, 0x36, 0x4E, 0x9C, 0xEE, 0xE9,
+        0xF9, 0xF7, 0x95, 0xA0, 0x15, 0x15, /* S: */
+        0x5B, 0xC7, 0x12, 0xAA, 0x28, 0x63, 0xE2, 0xAA, 0xF6, 0x07, 0x8A, 0x81, 0x90, 0x93,
+        0xFD, 0xFC, 0x70, 0x59, 0xA3, 0xF1, 0x46, 0x7F, 0x64, 0xEC, 0x7E, 0x22, 0x1F, 0xD1,
+        0x63, 0xD8, 0x0B, 0x3B, 0x55, 0x26, 0x25, 0xCF, 0x37, 0x9D, 0x1C, 0xBB, 0x9E, 0x51,
+        0x38, 0xCC, 0xD0, 0x7A, 0x19, 0x31,
+    ];
+    // P-521, no tag
+    const COSE_SIGN1_EC512: &[u8] = &[
+        0x84, /* Protected: {1: -36} */
+        0x44, 0xA1, 0x01, 0x38, 0x23, /* Unprotected: {4: '11'} */
+        0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
+        0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
+        0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
+        0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
+        0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
+        0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
+        0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
+        0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
+        0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
+        0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* signature - length 66 x 2 */
+        0x58, 0x84, /* R: */
+        0x01, 0xE5, 0xAE, 0x6A, 0xE6, 0xE2, 0xE3, 0xC0, 0xB5, 0x1D, 0xD1, 0x62, 0x74, 0x1C,
+        0xF9, 0x9D, 0xA6, 0x88, 0x19, 0x5C, 0xD9, 0x0E, 0x65, 0xFB, 0xBE, 0xE2, 0x38, 0x83,
+        0x81, 0x32, 0x3C, 0xAE, 0xC9, 0x1B, 0x3D, 0x0E, 0x3A, 0xC1, 0x4D, 0x0B, 0x8B, 0x29,
+        0xA8, 0x56, 0x2E, 0xB2, 0x17, 0x65, 0x9F, 0x27, 0xBE, 0xB4, 0x30, 0xA1, 0xD7, 0x4F,
+        0x42, 0x35, 0x3A, 0x2C, 0x0A, 0xC5, 0x1F, 0xC2, 0x36, 0x48, /* S: */
+        0x00, 0x00, 0x89, 0xEA, 0xF7, 0x09, 0x50, 0xF8, 0x45, 0x83, 0xA7, 0xC4, 0x79, 0x2F,
+        0xAD, 0xC6, 0x96, 0xC3, 0x03, 0x33, 0xF2, 0xDF, 0x19, 0x48, 0x83, 0x93, 0xAB, 0xAE,
+        0x31, 0x6A, 0x2E, 0x17, 0x1D, 0x58, 0x87, 0x65, 0xC4, 0x36, 0xA2, 0xA2, 0x05, 0xAD,
+        0x81, 0x51, 0xF3, 0x97, 0x3E, 0xC0, 0xB4, 0xA7, 0xB8, 0x97, 0xE4, 0x90, 0x8C, 0x79,
+        0x6F, 0x85, 0x24, 0x84, 0xAE, 0x39, 0x26, 0xB3, 0xB8, 0x1B,
+    ];
+
+    use der::asn1::ObjectIdentifier;
+
+    const OID_EC_PUBLIC_KEY: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+    const OID_P256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
+    const OID_P384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.0.34");
+    const OID_P521: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.0.35");
+
+    fn ec_curve_oid(curve: crate::crypto::SignatureAlgorithm) -> ObjectIdentifier {
+        match curve {
+            crate::crypto::SignatureAlgorithm::ES256 => OID_P256,
+            crate::crypto::SignatureAlgorithm::ES384 => OID_P384,
+            crate::crypto::SignatureAlgorithm::ES512 => OID_P521,
+        }
+    }
+
+    fn sec1_point(x: &[u8], y: &[u8]) -> Vec<u8> {
+        let mut point = vec![0x04u8];
+        point.extend_from_slice(x);
+        point.extend_from_slice(y);
+        point
+    }
+
+    fn pkcs8_from_ec_parts(
+        curve: crate::crypto::SignatureAlgorithm,
+        d: &[u8],
+        x: &[u8],
+        y: &[u8],
+    ) -> Vec<u8> {
+        use der::{Encode, asn1::AnyRef};
+        use pkcs8::{AlgorithmIdentifierRef, PrivateKeyInfo};
+        use sec1::{EcParameters, EcPrivateKey as Sec1PrivKey};
+
+        let point = sec1_point(x, y);
+        let params = EcParameters::NamedCurve(ec_curve_oid(curve));
+        let sec1_key = Sec1PrivKey {
+            private_key: d,
+            parameters: Some(params),
+            public_key: Some(&point),
+        };
+        let sec1_der = sec1_key.to_der().expect("SEC1 DER encode");
+        let algo = AlgorithmIdentifierRef {
+            oid: OID_EC_PUBLIC_KEY,
+            parameters: Some(AnyRef::from(&params)),
+        };
+        PrivateKeyInfo::new(algo, &sec1_der)
+            .to_der()
+            .expect("PKCS#8 DER encode")
+    }
+
+    fn spki_from_ec_parts(
+        curve: crate::crypto::SignatureAlgorithm,
+        x: &[u8],
+        y: &[u8],
+    ) -> Vec<u8> {
+        use der::{Encode, asn1::{AnyRef, BitStringRef}};
+        use sec1::EcParameters;
+        use spki::{AlgorithmIdentifierRef, SubjectPublicKeyInfoRef};
+
+        let point = sec1_point(x, y);
+        let params = EcParameters::NamedCurve(ec_curve_oid(curve));
+        let algo = AlgorithmIdentifierRef {
+            oid: OID_EC_PUBLIC_KEY,
+            parameters: Some(AnyRef::from(&params)),
+        };
+        let pub_key_bits = BitStringRef::from_bytes(&point).expect("valid EC point");
+        SubjectPublicKeyInfoRef {
+            algorithm: algo,
+            subject_public_key: pub_key_bits,
+        }
+        .to_der()
+        .expect("SPKI DER encode")
+    }
 
     mod generic {
         use crate::crypto::SignatureAlgorithm;
@@ -564,139 +756,80 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "key_openssl_pkey")]
+    #[cfg(feature = "openssl")]
     mod openssl {
-        use crate::crypto::Openssl;
-        use crate::crypto::SignatureAlgorithm;
+        use crate::crypto::{EcPrivateKey, EcPublicKey, SignatureAlgorithm};
         use crate::sign::*;
-        use openssl::pkey::{PKey, Private, Public};
 
         use super::TEXT;
 
         /// Static PRIME256V1/P-256 key to be used when cross-validating the implementation
-        fn get_ec256_test_key() -> (PKey<Private>, PKey<Public>) {
-            let alg =
-                openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
-            let x = openssl::bn::BigNum::from_hex_str(
-                "9ff7423a1aace5f3e33dfaeda2c7744e3d15c2a4f6382386c93fa60c1bdb260c",
+        fn get_ec256_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let x = hex::decode(super::EC256_X).unwrap();
+            let y = hex::decode(super::EC256_Y).unwrap();
+            let d = hex::decode(super::EC256_D).unwrap();
+            let priv_key = EcPrivateKey::from_pkcs8(
+                &super::pkcs8_from_ec_parts(SignatureAlgorithm::ES256, &d, &x, &y),
             )
             .unwrap();
-            let y = openssl::bn::BigNum::from_hex_str(
-                "3489e6b132f36e5ece948e73bd44231a1c3d0dacf566712a44fe8a9835d5b6fe",
+            let pub_key = EcPublicKey::from_spki(
+                &super::spki_from_ec_parts(SignatureAlgorithm::ES256, &x, &y),
             )
             .unwrap();
-            let d = openssl::bn::BigNum::from_hex_str(
-                "8e21d79fb6955dbe7bb592d92de4690f8bf75dc1495b2433ba78d5828e1f933f",
-            )
-            .unwrap();
-
-            let ec_public =
-                openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
-            let ec_private =
-                openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key())
-                    .unwrap();
-            (
-                PKey::from_ec_key(ec_private).unwrap(),
-                PKey::from_ec_key(ec_public).unwrap(),
-            )
+            (priv_key, pub_key)
         }
 
         /// Static SECP384R1/P-384 key to be used when cross-validating the implementation
-        fn get_ec384_test_key() -> (PKey<Private>, PKey<Public>) {
-            let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP384R1).unwrap();
-            let x = openssl::bn::BigNum::from_hex_str(
-                "5a829f62f2f4f095c0e922719285b4b981c677912870a413137a5d7319916fa8\
-            584a6036951d06ffeae99ca73ab1a2dc",
+        fn get_ec384_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let x = hex::decode(super::EC384_X).unwrap();
+            let y = hex::decode(super::EC384_Y).unwrap();
+            let d = hex::decode(super::EC384_D).unwrap();
+            let priv_key = EcPrivateKey::from_pkcs8(
+                &super::pkcs8_from_ec_parts(SignatureAlgorithm::ES384, &d, &x, &y),
             )
             .unwrap();
-            let y = openssl::bn::BigNum::from_hex_str(
-                "e1b76e08cb20d6afcea7423f8b49ec841dde6f210a6174750bf8136a31549422\
-            4df153184557a6c29a1d7994804f604c",
+            let pub_key = EcPublicKey::from_spki(
+                &super::spki_from_ec_parts(SignatureAlgorithm::ES384, &x, &y),
             )
             .unwrap();
-            let d = openssl::bn::BigNum::from_hex_str(
-                "55c6aa815a31741bc37f0ffddea73af2397bad640816ef22bfb689efc1b6cc68\
-            2a73f7e5a657248e3abad500e46d5afc",
-            )
-            .unwrap();
-            let ec_public =
-                openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
-            let ec_private =
-                openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key())
-                    .unwrap();
-            (
-                PKey::from_ec_key(ec_private).unwrap(),
-                PKey::from_ec_key(ec_public).unwrap(),
-            )
+            (priv_key, pub_key)
         }
 
-        /// Static SECP521R1/P-512 key to be used when cross-validating the implementation
-        fn get_ec512_test_key() -> (PKey<Private>, PKey<Public>) {
-            let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP521R1).unwrap();
-            let x = openssl::bn::BigNum::from_hex_str(
-                "004365ee31a93b6e69b2c895890aaae14194cd84601bbb59587ad08ab5960522\
-            7dc7b34288e6471b0f06050763b88b4fb017f279c86030b0069100401e4016a3\
-            be8a",
+        /// Static SECP521R1/P-521 key to be used when cross-validating the implementation
+        fn get_ec512_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let x = hex::decode(super::EC512_X).unwrap();
+            let y = hex::decode(super::EC512_Y).unwrap();
+            let d = hex::decode(super::EC512_D).unwrap();
+            let priv_key = EcPrivateKey::from_pkcs8(
+                &super::pkcs8_from_ec_parts(SignatureAlgorithm::ES512, &d, &x, &y),
             )
             .unwrap();
-            let y = openssl::bn::BigNum::from_hex_str(
-                "00792d772bf93cd965027df2df02d3f99ea1c4ecd18c20738ebae66854fd3afc\
-            d2ea4e902bcd37a4d2a5c639caee71513acaf7d8f7ffa11042257c5d8c697409\
-            5713",
+            let pub_key = EcPublicKey::from_spki(
+                &super::spki_from_ec_parts(SignatureAlgorithm::ES512, &x, &y),
             )
             .unwrap();
-            let d = openssl::bn::BigNum::from_hex_str(
-                "007c6fd88271bcd6c5d6bada258691a27700abeff0ad86891a27f93a73f00947\
-            7c53b4e069db544429ad8220d18813f5f3ab90946ebdf4f41ca929999709f7c4\
-            89e8",
-            )
-            .unwrap();
-            let ec_public =
-                openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
-            let ec_private =
-                openssl::ec::EcKey::from_private_components(&alg, &d, &ec_public.public_key())
-                    .unwrap();
-            (
-                PKey::from_ec_key(ec_private).unwrap(),
-                PKey::from_ec_key(ec_public).unwrap(),
-            )
+            (priv_key, pub_key)
         }
 
-        /// Randomly generate PRIME256V1/P-256 key to use for validating signining internally
-        fn generate_ec256_test_key() -> (PKey<Private>, PKey<Public>) {
-            let alg =
-                openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
-            let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
-            let ec_public =
-                openssl::ec::EcKey::from_public_key(&alg, ec_private.public_key()).unwrap();
-            (
-                PKey::from_ec_key(ec_private).unwrap(),
-                PKey::from_ec_key(ec_public).unwrap(),
-            )
+        /// Randomly generate PRIME256V1/P-256 key to use for validating signing internally
+        fn generate_ec256_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let priv_key = EcPrivateKey::generate_test_keypair(SignatureAlgorithm::ES256);
+            let pub_key = priv_key.public_key().unwrap();
+            (priv_key, pub_key)
         }
 
-        /// Randomly generate SECP384R1/P-384 key to use for validating signining internally
-        fn generate_ec384_test_key() -> (PKey<Private>, PKey<Public>) {
-            let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP384R1).unwrap();
-            let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
-            let ec_public =
-                openssl::ec::EcKey::from_public_key(&alg, ec_private.public_key()).unwrap();
-            (
-                PKey::from_ec_key(ec_private).unwrap(),
-                PKey::from_ec_key(ec_public).unwrap(),
-            )
+        /// Randomly generate SECP384R1/P-384 key to use for validating signing internally
+        fn generate_ec384_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let priv_key = EcPrivateKey::generate_test_keypair(SignatureAlgorithm::ES384);
+            let pub_key = priv_key.public_key().unwrap();
+            (priv_key, pub_key)
         }
 
-        /// Randomly generate SECP521R1/P-512 key to use for validating signing internally
-        fn generate_ec512_test_key() -> (PKey<Private>, PKey<Public>) {
-            let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP521R1).unwrap();
-            let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
-            let ec_public =
-                openssl::ec::EcKey::from_public_key(&alg, ec_private.public_key()).unwrap();
-            (
-                PKey::from_ec_key(ec_private).unwrap(),
-                PKey::from_ec_key(ec_public).unwrap(),
-            )
+        /// Randomly generate SECP521R1/P-521 key to use for validating signing internally
+        fn generate_ec512_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let priv_key = EcPrivateKey::generate_test_keypair(SignatureAlgorithm::ES512);
+            let pub_key = priv_key.public_key().unwrap();
+            (priv_key, pub_key)
         }
 
         #[test]
@@ -704,32 +837,10 @@ mod tests {
             let (_, ec_public) = get_ec256_test_key();
 
             // This output was validated against COSE-C implementation
-            let cose_doc = CoseSign1::from_bytes(&[
-                0xd9, 0x00, 0x12, /* tag 18 */
-                0x84, /* Protected: {1: -7} */
-                0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
-                0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
-                0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
-                0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
-                0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
-                0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
-                0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
-                0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
-                0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
-                0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
-                0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* Signature - length 32 x 2 */
-                0x58, 0x40, /* R: */
-                0x6E, 0x6D, 0xF6, 0x54, 0x89, 0xEA, 0x3B, 0x01, 0x88, 0x33, 0xF5, 0xFC, 0x4F, 0x84,
-                0xF8, 0x1B, 0x4D, 0x5E, 0xFD, 0x5A, 0x09, 0xD5, 0xC6, 0x2F, 0x2E, 0x92, 0x38, 0x5D,
-                0xCE, 0x31, 0xE2, 0xD1, /* S: */
-                0x5A, 0x53, 0xA9, 0xF0, 0x75, 0xE8, 0xFB, 0x39, 0x66, 0x9F, 0xCD, 0x4E, 0xB5, 0x22,
-                0xC8, 0x5C, 0x92, 0x77, 0x45, 0x2F, 0xA8, 0x57, 0xF5, 0xFE, 0x37, 0x9E, 0xDD, 0xEF,
-                0x0F, 0xAB, 0x3C, 0xDD,
-            ])
-            .unwrap();
+            let cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC256_TAGGED).unwrap();
 
             assert_eq!(
-                cose_doc.get_payload::<Openssl>(Some(&ec_public)).unwrap(),
+                cose_doc.get_payload(Some(&ec_public)).unwrap(),
                 TEXT
             );
         }
@@ -739,33 +850,10 @@ mod tests {
             let (_, ec_public) = get_ec384_test_key();
 
             // This output was validated against COSE-C implementation
-            let cose_doc = CoseSign1::from_bytes(&[
-                0x84, /* Protected: {1: -35} */
-                0x44, 0xA1, 0x01, 0x38, 0x22, /* Unprotected: {4: '11'} */
-                0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
-                0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
-                0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
-                0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
-                0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
-                0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
-                0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
-                0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
-                0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
-                0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* signature - length 48 x 2 */
-                0x58, 0x60, /* R: */
-                0xCD, 0x42, 0xD2, 0x76, 0x32, 0xD5, 0x41, 0x4E, 0x4B, 0x54, 0x5C, 0x95, 0xFD, 0xE6,
-                0xE3, 0x50, 0x5B, 0x93, 0x58, 0x0F, 0x4B, 0x77, 0x31, 0xD1, 0x4A, 0x86, 0x52, 0x31,
-                0x75, 0x26, 0x6C, 0xDE, 0xB2, 0x4A, 0xFF, 0x2D, 0xE3, 0x36, 0x4E, 0x9C, 0xEE, 0xE9,
-                0xF9, 0xF7, 0x95, 0xA0, 0x15, 0x15, /* S: */
-                0x5B, 0xC7, 0x12, 0xAA, 0x28, 0x63, 0xE2, 0xAA, 0xF6, 0x07, 0x8A, 0x81, 0x90, 0x93,
-                0xFD, 0xFC, 0x70, 0x59, 0xA3, 0xF1, 0x46, 0x7F, 0x64, 0xEC, 0x7E, 0x22, 0x1F, 0xD1,
-                0x63, 0xD8, 0x0B, 0x3B, 0x55, 0x26, 0x25, 0xCF, 0x37, 0x9D, 0x1C, 0xBB, 0x9E, 0x51,
-                0x38, 0xCC, 0xD0, 0x7A, 0x19, 0x31,
-            ])
-            .unwrap();
+            let cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC384).unwrap();
 
             assert_eq!(
-                cose_doc.get_payload::<Openssl>(Some(&ec_public)).unwrap(),
+                cose_doc.get_payload(Some(&ec_public)).unwrap(),
                 TEXT
             );
         }
@@ -775,35 +863,10 @@ mod tests {
             let (_, ec_public) = get_ec512_test_key();
 
             // This output was validated against COSE-C implementation
-            let cose_doc = CoseSign1::from_bytes(&[
-                0x84, /* Protected: {1: -36} */
-                0x44, 0xA1, 0x01, 0x38, 0x23, /* Unprotected: {4: '11'} */
-                0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
-                0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
-                0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
-                0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
-                0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
-                0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
-                0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
-                0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
-                0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
-                0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* signature - length 66 x 2 */
-                0x58, 0x84, /* R: */
-                0x01, 0xE5, 0xAE, 0x6A, 0xE6, 0xE2, 0xE3, 0xC0, 0xB5, 0x1D, 0xD1, 0x62, 0x74, 0x1C,
-                0xF9, 0x9D, 0xA6, 0x88, 0x19, 0x5C, 0xD9, 0x0E, 0x65, 0xFB, 0xBE, 0xE2, 0x38, 0x83,
-                0x81, 0x32, 0x3C, 0xAE, 0xC9, 0x1B, 0x3D, 0x0E, 0x3A, 0xC1, 0x4D, 0x0B, 0x8B, 0x29,
-                0xA8, 0x56, 0x2E, 0xB2, 0x17, 0x65, 0x9F, 0x27, 0xBE, 0xB4, 0x30, 0xA1, 0xD7, 0x4F,
-                0x42, 0x35, 0x3A, 0x2C, 0x0A, 0xC5, 0x1F, 0xC2, 0x36, 0x48, /* S: */
-                0x00, 0x00, 0x89, 0xEA, 0xF7, 0x09, 0x50, 0xF8, 0x45, 0x83, 0xA7, 0xC4, 0x79, 0x2F,
-                0xAD, 0xC6, 0x96, 0xC3, 0x03, 0x33, 0xF2, 0xDF, 0x19, 0x48, 0x83, 0x93, 0xAB, 0xAE,
-                0x31, 0x6A, 0x2E, 0x17, 0x1D, 0x58, 0x87, 0x65, 0xC4, 0x36, 0xA2, 0xA2, 0x05, 0xAD,
-                0x81, 0x51, 0xF3, 0x97, 0x3E, 0xC0, 0xB4, 0xA7, 0xB8, 0x97, 0xE4, 0x90, 0x8C, 0x79,
-                0x6F, 0x85, 0x24, 0x84, 0xAE, 0x39, 0x26, 0xB3, 0xB8, 0x1B,
-            ])
-            .unwrap();
+            let cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC512).unwrap();
 
             assert_eq!(
-                cose_doc.get_payload::<Openssl>(Some(&ec_public)).unwrap(),
+                cose_doc.get_payload(Some(&ec_public)).unwrap(),
                 TEXT
             );
         }
@@ -813,12 +876,12 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                cose_doc2.get_payload::<Openssl>(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
             );
             assert!(!cose_doc2.get_unprotected().is_empty(),);
             assert_eq!(
@@ -833,7 +896,7 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             // Tag 6.18 should be present
             assert_eq!(tagged_bytes[0], 6 << 5 | 18);
@@ -842,8 +905,8 @@ mod tests {
             let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                cose_doc2.get_payload::<Openssl>(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
             );
         }
 
@@ -853,15 +916,15 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             // Tag 6.18 should be present
             assert_eq!(tagged_bytes[0], 6 << 5 | 18);
             let cose_doc2: CoseSign1 = serde_cbor::from_slice(&tagged_bytes).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                cose_doc2.get_payload::<Openssl>(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
             );
         }
 
@@ -879,7 +942,7 @@ mod tests {
             let mut unprotected = HeaderMap::new();
             unprotected.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new_with_protected::<Openssl>(
+            let cose_doc1 = CoseSign1::new_with_protected(
                 TEXT,
                 &protected,
                 &unprotected,
@@ -889,7 +952,7 @@ mod tests {
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             let (protected, payload) = cose_doc2
-                .get_protected_and_payload::<Openssl>(Some(&ec_public))
+                .get_protected_and_payload(Some(&ec_public))
                 .unwrap();
 
             assert_eq!(
@@ -909,12 +972,12 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                cose_doc2.get_payload::<Openssl>(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
             );
         }
 
@@ -924,26 +987,27 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload::<Openssl>(Some(&ec_public)).unwrap(),
+                cose_doc1.get_payload(Some(&ec_public)).unwrap(),
                 TEXT.to_vec()
             );
             assert_eq!(
-                cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                cose_doc2.get_payload::<Openssl>(Some(&ec_public)).unwrap()
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
             );
         }
 
         #[test]
         fn unknown_curve() {
             let alg = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP256K1).unwrap();
-            let ec_private = openssl::ec::EcKey::generate(&alg).unwrap();
-            let ec_private = PKey::from_ec_key(ec_private).unwrap();
+            let ec_key = openssl::ec::EcKey::generate(&alg).unwrap();
+            let pkey = openssl::pkey::PKey::from_ec_key(ec_key).unwrap();
+            let ec_private = EcPrivateKey::from_pkey_unchecked(pkey);
             let map = HeaderMap::new();
-            let result = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private);
+            let result = CoseSign1::new(TEXT, &map, &ec_private);
             assert!(result.is_err());
         }
 
@@ -954,11 +1018,11 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
 
-            assert!(cose_doc1.verify_signature::<Openssl>(&ec_public).unwrap());
+            assert!(cose_doc1.verify_signature(&ec_public).unwrap());
             assert!(!cose_doc1
-                .verify_signature::<Openssl>(&ec_public_other)
+                .verify_signature(&ec_public_other)
                 .unwrap());
         }
 
@@ -969,11 +1033,11 @@ mod tests {
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
 
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
 
-            assert!(cose_doc1.verify_signature::<Openssl>(&ec_public).unwrap());
+            assert!(cose_doc1.verify_signature(&ec_public).unwrap());
             assert!(!cose_doc1
-                .verify_signature::<Openssl>(&ec_public_other)
+                .verify_signature(&ec_public_other)
                 .unwrap());
         }
 
@@ -1004,7 +1068,7 @@ mod tests {
             ])
             .unwrap();
 
-            assert!(cose_doc.get_payload::<Openssl>(Some(&ec_public)).is_err());
+            assert!(cose_doc.get_payload(Some(&ec_public)).is_err());
         }
 
         #[test]
@@ -1034,33 +1098,14 @@ mod tests {
             ])
             .unwrap();
 
-            assert!(cose_doc.get_payload::<Openssl>(Some(&ec_public)).is_err());
+            assert!(cose_doc.get_payload(Some(&ec_public)).is_err());
         }
 
         #[test]
         fn cose_sign1_ec256_invalid_tag() {
-            let cose_doc = CoseSign1::from_bytes(&[
-                0xd3, /* tag 19 */
-                0x84, /* Protected: {1: -7} */
-                0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
-                0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
-                0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
-                0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
-                0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
-                0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
-                0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
-                0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
-                0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
-                0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
-                0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* Signature - length 32 x 2 */
-                0x58, 0x40, /* R: */
-                0x6E, 0x6D, 0xF6, 0x54, 0x89, 0xEA, 0x3B, 0x01, 0x88, 0x33, 0xF5, 0xFC, 0x4F, 0x84,
-                0xF8, 0x1B, 0x4D, 0x5E, 0xFD, 0x5A, 0x09, 0xD5, 0xC6, 0x2F, 0x2E, 0x92, 0x38, 0x5D,
-                0xCE, 0x31, 0xE2, 0xD1, /* S: */
-                0x5A, 0x53, 0xA9, 0xF0, 0x75, 0xE8, 0xFB, 0x39, 0x66, 0x9F, 0xCD, 0x4E, 0xB5, 0x22,
-                0xC8, 0x5C, 0x92, 0x77, 0x45, 0x2F, 0xA8, 0x57, 0xF5, 0xFE, 0x37, 0x9E, 0xDD, 0xEF,
-                0x0F, 0xAB, 0x3C, 0xDD,
-            ]);
+            let mut bytes = vec![0xd3u8]; /* tag 19 */
+            bytes.extend_from_slice(super::COSE_SIGN1_EC256_UNTAGGED);
+            let cose_doc = CoseSign1::from_bytes(&bytes);
 
             match cose_doc.unwrap_err() {
                 CoseError::TagError(Some(19)) => (),
@@ -1070,27 +1115,7 @@ mod tests {
 
         #[test]
         fn cose_sign1_ec256_missing_tag() {
-            let cose_doc = CoseSign1::from_bytes_tagged(&[
-                0x84, /* Protected: {1: -7} */
-                0x43, 0xA1, 0x01, 0x26, /* Unprotected: {4: '11'} */
-                0xA1, 0x04, 0x42, 0x31, 0x31, /* payload: */
-                0x58, 0x75, 0x49, 0x74, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20, 0x74, 0x72, 0x75, 0x74,
-                0x68, 0x20, 0x75, 0x6E, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6C, 0x6C, 0x79, 0x20,
-                0x61, 0x63, 0x6B, 0x6E, 0x6F, 0x77, 0x6C, 0x65, 0x64, 0x67, 0x65, 0x64, 0x2C, 0x20,
-                0x74, 0x68, 0x61, 0x74, 0x20, 0x61, 0x20, 0x73, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x20,
-                0x6D, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x70, 0x6F, 0x73, 0x73, 0x65, 0x73, 0x73,
-                0x69, 0x6F, 0x6E, 0x20, 0x6F, 0x66, 0x20, 0x61, 0x20, 0x67, 0x6F, 0x6F, 0x64, 0x20,
-                0x66, 0x6F, 0x72, 0x74, 0x75, 0x6E, 0x65, 0x2C, 0x20, 0x6D, 0x75, 0x73, 0x74, 0x20,
-                0x62, 0x65, 0x20, 0x69, 0x6E, 0x20, 0x77, 0x61, 0x6E, 0x74, 0x20, 0x6F, 0x66, 0x20,
-                0x61, 0x20, 0x77, 0x69, 0x66, 0x65, 0x2E, /* Signature - length 32 x 2 */
-                0x58, 0x40, /* R: */
-                0x6E, 0x6D, 0xF6, 0x54, 0x89, 0xEA, 0x3B, 0x01, 0x88, 0x33, 0xF5, 0xFC, 0x4F, 0x84,
-                0xF8, 0x1B, 0x4D, 0x5E, 0xFD, 0x5A, 0x09, 0xD5, 0xC6, 0x2F, 0x2E, 0x92, 0x38, 0x5D,
-                0xCE, 0x31, 0xE2, 0xD1, /* S: */
-                0x5A, 0x53, 0xA9, 0xF0, 0x75, 0xE8, 0xFB, 0x39, 0x66, 0x9F, 0xCD, 0x4E, 0xB5, 0x22,
-                0xC8, 0x5C, 0x92, 0x77, 0x45, 0x2F, 0xA8, 0x57, 0xF5, 0xFE, 0x37, 0x9E, 0xDD, 0xEF,
-                0x0F, 0xAB, 0x3C, 0xDD,
-            ]);
+            let cose_doc = CoseSign1::from_bytes_tagged(super::COSE_SIGN1_EC256_UNTAGGED);
 
             match cose_doc.unwrap_err() {
                 CoseError::TagError(None) => (),
@@ -1099,7 +1124,7 @@ mod tests {
         }
 
         // Key with kid "11" from RFC8152 appendix C, section C.7.1
-        fn rfc_8152_key_kid_11() -> PKey<Public> {
+        fn rfc_8152_key_kid_11() -> EcPublicKey {
             /*
             {
                 -1:1,  // NIST P-256
@@ -1109,22 +1134,10 @@ mod tests {
                 2:'11'
             },
             */
-
-            let alg =
-                openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
-            let x = openssl::bn::BigNum::from_hex_str(
-                "bac5b11cad8f99f9c72b05cf4b9e26d244dc189f745228255a219a86d6a09eff",
-            )
-            .unwrap();
-            let y = openssl::bn::BigNum::from_hex_str(
-                "20138bf82dc1b6d562be0fa54ab7804a3a64b6d72ccfed6b6fb6ed28bbfc117e",
-            )
-            .unwrap();
-
-            let ec_public =
-                openssl::ec::EcKey::from_public_key_affine_coordinates(&alg, &x, &y).unwrap();
-
-            PKey::from_ec_key(ec_public).unwrap()
+            let x = hex::decode(super::RFC8152_KID11_X).unwrap();
+            let y = hex::decode(super::RFC8152_KID11_Y).unwrap();
+            EcPublicKey::from_spki(&super::spki_from_ec_parts(SignatureAlgorithm::ES256, &x, &y))
+                .unwrap()
         }
 
         #[test]
@@ -1148,7 +1161,7 @@ mod tests {
             let ec_public = rfc_8152_key_kid_11();
 
             assert_eq!(
-                cose_doc.get_payload::<Openssl>(Some(&ec_public)).unwrap(),
+                cose_doc.get_payload(Some(&ec_public)).unwrap(),
                 payload
             );
         }
@@ -1158,7 +1171,6 @@ mod tests {
     mod tpm {
         use super::TEXT;
         use crate::crypto::tpm::TpmKey;
-        use crate::crypto::Openssl;
         use crate::sign::*;
 
         use tss_esapi::{
@@ -1221,7 +1233,7 @@ mod tests {
 
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-            let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &mut tpm_key).unwrap();
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &mut tpm_key).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
             // Tag 6.18 should be present
@@ -1229,9 +1241,9 @@ mod tests {
             let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
             assert_eq!(
-                cose_doc1.get_payload::<Openssl>(None).unwrap(),
+                cose_doc1.get_payload(None).unwrap(),
                 cose_doc2
-                    .get_payload::<Openssl>(Some(&mut tpm_key))
+                    .get_payload(Some(&mut tpm_key))
                     .unwrap()
             );
         }
@@ -1284,7 +1296,7 @@ mod tests {
 
             let mut map = HeaderMap::new();
             map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-            let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &mut tpm_key).unwrap();
+            let mut cose_doc1 = CoseSign1::new(TEXT, &map, &mut tpm_key).unwrap();
 
             // Mangle the signature
             cose_doc1.signature[0] = 0;
@@ -1292,7 +1304,7 @@ mod tests {
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
-            match cose_doc2.get_payload::<Openssl>(Some(&mut tpm_key)) {
+            match cose_doc2.get_payload(Some(&mut tpm_key)) {
                 Ok(_) => panic!("Did not fail"),
                 Err(CoseError::UnverifiedSignature) => {}
                 Err(e) => {
@@ -1302,13 +1314,258 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "ring", feature = "aws-lc-rs"))]
+    mod ring_like {
+        use crate::crypto::{EcPrivateKey, EcPublicKey, SignatureAlgorithm};
+        use crate::sign::*;
+
+        use super::TEXT;
+
+        fn get_ec256_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let x = hex::decode(super::EC256_X).unwrap();
+            let y = hex::decode(super::EC256_Y).unwrap();
+            let d = hex::decode(super::EC256_D).unwrap();
+            let priv_key = EcPrivateKey::from_pkcs8(
+                &super::pkcs8_from_ec_parts(SignatureAlgorithm::ES256, &d, &x, &y),
+            )
+            .unwrap();
+            let pub_key = EcPublicKey::from_spki(
+                &super::spki_from_ec_parts(SignatureAlgorithm::ES256, &x, &y),
+            )
+            .unwrap();
+            (priv_key, pub_key)
+        }
+
+        fn get_ec384_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let x = hex::decode(super::EC384_X).unwrap();
+            let y = hex::decode(super::EC384_Y).unwrap();
+            let d = hex::decode(super::EC384_D).unwrap();
+            let priv_key = EcPrivateKey::from_pkcs8(
+                &super::pkcs8_from_ec_parts(SignatureAlgorithm::ES384, &d, &x, &y),
+            )
+            .unwrap();
+            let pub_key = EcPublicKey::from_spki(
+                &super::spki_from_ec_parts(SignatureAlgorithm::ES384, &x, &y),
+            )
+            .unwrap();
+            (priv_key, pub_key)
+        }
+
+        #[cfg(feature = "aws-lc-rs")]
+        fn get_ec512_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let x = hex::decode(super::EC512_X).unwrap();
+            let y = hex::decode(super::EC512_Y).unwrap();
+            let d = hex::decode(super::EC512_D).unwrap();
+            let priv_key = EcPrivateKey::from_pkcs8(
+                &super::pkcs8_from_ec_parts(SignatureAlgorithm::ES512, &d, &x, &y),
+            )
+            .unwrap();
+            let pub_key = EcPublicKey::from_spki(
+                &super::spki_from_ec_parts(SignatureAlgorithm::ES512, &x, &y),
+            )
+            .unwrap();
+            (priv_key, pub_key)
+        }
+
+        fn generate_ec256_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let priv_key = EcPrivateKey::generate_test_keypair(SignatureAlgorithm::ES256);
+            let pub_key = priv_key.public_key().unwrap();
+            (priv_key, pub_key)
+        }
+
+        fn generate_ec384_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let priv_key = EcPrivateKey::generate_test_keypair(SignatureAlgorithm::ES384);
+            let pub_key = priv_key.public_key().unwrap();
+            (priv_key, pub_key)
+        }
+
+        #[cfg(feature = "aws-lc-rs")]
+        fn generate_ec512_test_key() -> (EcPrivateKey, EcPublicKey) {
+            let priv_key = EcPrivateKey::generate_test_keypair(SignatureAlgorithm::ES512);
+            let pub_key = priv_key.public_key().unwrap();
+            (priv_key, pub_key)
+        }
+
+        // RFC 8152 appendix C key kid "11"
+        fn rfc_8152_key_kid_11() -> EcPublicKey {
+            let x = hex::decode(super::RFC8152_KID11_X).unwrap();
+            let y = hex::decode(super::RFC8152_KID11_Y).unwrap();
+            EcPublicKey::from_spki(&super::spki_from_ec_parts(SignatureAlgorithm::ES256, &x, &y))
+                .unwrap()
+        }
+
+        #[test]
+        fn cose_sign1_ec256_validate() {
+            let (_, ec_public) = get_ec256_test_key();
+
+            let cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC256_TAGGED).unwrap();
+
+            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), TEXT);
+        }
+
+        #[test]
+        fn cose_sign1_ec384_validate() {
+            let (_, ec_public) = get_ec384_test_key();
+
+            let cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC384).unwrap();
+
+            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), TEXT);
+        }
+
+        #[cfg(feature = "aws-lc-rs")]
+        #[test]
+        fn cose_sign1_ec512_validate() {
+            let (_, ec_public) = get_ec512_test_key();
+
+            let cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC512).unwrap();
+
+            assert_eq!(cose_doc.get_payload(Some(&ec_public)).unwrap(), TEXT);
+        }
+
+        #[test]
+        fn cose_sign1_ec256_text() {
+            let (ec_private, ec_public) = generate_ec256_test_key();
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
+
+            assert_eq!(
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+            );
+        }
+
+        #[test]
+        fn cose_sign1_ec256_text_tagged() {
+            let (ec_private, ec_public) = generate_ec256_test_key();
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
+            assert_eq!(tagged_bytes[0], 6 << 5 | 18);
+            let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
+
+            assert_eq!(
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+            );
+        }
+
+        #[test]
+        fn cose_sign1_ec384_text() {
+            let (ec_private, ec_public) = generate_ec384_test_key();
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
+
+            assert_eq!(
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+            );
+        }
+
+        #[cfg(feature = "aws-lc-rs")]
+        #[test]
+        fn cose_sign1_ec512_text() {
+            let (ec_private, ec_public) = generate_ec512_test_key();
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+            let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
+
+            assert_eq!(
+                cose_doc1.get_payload(None).unwrap(),
+                cose_doc2.get_payload(Some(&ec_public)).unwrap()
+            );
+        }
+
+        #[test]
+        fn validate_with_wrong_key() {
+            let (ec_private, ec_public) = generate_ec256_test_key();
+            let (_, ec_public_other) = generate_ec256_test_key();
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+
+            assert!(cose_doc1.verify_signature(&ec_public).unwrap());
+            assert!(!cose_doc1.verify_signature(&ec_public_other).unwrap());
+        }
+
+        #[test]
+        fn validate_with_wrong_key_type() {
+            let (ec_private, ec_public) = generate_ec256_test_key();
+            let (_, ec_public_other) = generate_ec384_test_key();
+            let mut map = HeaderMap::new();
+            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+
+            let cose_doc1 = CoseSign1::new(TEXT, &map, &ec_private).unwrap();
+
+            assert!(cose_doc1.verify_signature(&ec_public).unwrap());
+            assert!(!cose_doc1.verify_signature(&ec_public_other).unwrap());
+        }
+
+        #[test]
+        fn cose_sign1_ec256_tampered_content() {
+            let (_, ec_public) = get_ec256_test_key();
+
+            let mut cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC256_UNTAGGED).unwrap();
+            // Tamper with the payload
+            cose_doc.payload[0] ^= 0xff;
+
+            assert!(cose_doc.get_payload(Some(&ec_public)).is_err());
+        }
+
+        #[test]
+        fn cose_sign1_ec256_tampered_signature() {
+            let (_, ec_public) = get_ec256_test_key();
+
+            let mut cose_doc = CoseSign1::from_bytes(super::COSE_SIGN1_EC256_UNTAGGED).unwrap();
+            // Tamper with the signature
+            cose_doc.signature[0] ^= 0xff;
+
+            assert!(cose_doc.get_payload(Some(&ec_public)).is_err());
+        }
+
+        #[test]
+        fn rfc_8152_c_2_1_sign1_validate() {
+            let payload = "This is the content.".as_bytes().to_vec();
+
+            let signature = "8eb33e4ca31d1c465ab05aac34cc6b23d58fef5c083106c4d25a91aef0b0117e2af9a291aa32e14ab834dc56e\
+            d2a223444547e01f11d3b0916e5a4c345cacb36";
+
+            let mut unprotected = HeaderMap::new();
+            unprotected.insert(4.into(), "11".as_bytes().to_vec().into());
+
+            let cose_doc = CoseSign1 {
+                payload: ByteBuf::from(payload.clone()),
+                protected: ByteBuf::from(hex::decode("a10126").unwrap()),
+                unprotected,
+                signature: ByteBuf::from(hex::decode(signature).unwrap()),
+            };
+
+            let ec_public = rfc_8152_key_kid_11();
+
+            assert_eq!(
+                cose_doc.get_payload(Some(&ec_public)).unwrap(),
+                payload
+            );
+        }
+    }
+
     #[cfg(feature = "key_kms")]
     mod kms {
         use std::str::FromStr;
 
         use super::TEXT;
         use crate::{
-            crypto::{kms::KmsKey, Openssl, SignatureAlgorithm},
+            crypto::{kms::KmsKey, SignatureAlgorithm},
             sign::*,
         };
 
@@ -1333,7 +1590,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
+                let cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
                 // Tag 6.18 should be present
@@ -1341,8 +1598,8 @@ mod tests {
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
                 assert_eq!(
-                    cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                    cose_doc2.get_payload::<Openssl>(Some(&kms_key)).unwrap()
+                    cose_doc1.get_payload(None).unwrap(),
+                    cose_doc2.get_payload(Some(&kms_key)).unwrap()
                 );
             })
             .await
@@ -1366,7 +1623,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
+                let mut cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
 
                 // Mangle the signature
                 cose_doc1.signature[0] ^= 0xff;
@@ -1374,7 +1631,7 @@ mod tests {
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
-                match cose_doc2.get_payload::<Openssl>(Some(&kms_key)) {
+                match cose_doc2.get_payload(Some(&kms_key)) {
                     Ok(_) => panic!("Did not fail"),
                     Err(CoseError::UnverifiedSignature) => {}
                     Err(e) => {
@@ -1386,7 +1643,7 @@ mod tests {
             .unwrap();
         }
 
-        #[cfg(feature = "key_openssl_pkey")]
+        #[cfg(feature = "openssl")]
         #[tokio::test]
         async fn cose_sign_kms_public_key() {
             let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
@@ -1400,7 +1657,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
+                let cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
                 // Tag 6.18 should be present
@@ -1408,15 +1665,15 @@ mod tests {
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
                 assert_eq!(
-                    cose_doc1.get_payload::<Openssl>(None).unwrap(),
-                    cose_doc2.get_payload::<Openssl>(Some(&kms_key)).unwrap()
+                    cose_doc1.get_payload(None).unwrap(),
+                    cose_doc2.get_payload(Some(&kms_key)).unwrap()
                 );
             })
             .await
             .unwrap();
         }
 
-        #[cfg(feature = "key_openssl_pkey")]
+        #[cfg(feature = "openssl")]
         #[tokio::test]
         async fn cose_sign_kms_public_key_invalid_signature() {
             let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
@@ -1430,7 +1687,7 @@ mod tests {
 
                 let mut map = HeaderMap::new();
                 map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
-                let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
+                let mut cose_doc1 = CoseSign1::new(TEXT, &map, &kms_key).unwrap();
 
                 // Mangle the signature
                 cose_doc1.signature[0] ^= 0xff;
@@ -1438,7 +1695,7 @@ mod tests {
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
                 let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
-                match cose_doc2.get_payload::<Openssl>(Some(&kms_key)) {
+                match cose_doc2.get_payload(Some(&kms_key)) {
                     Ok(_) => panic!("Did not fail"),
                     Err(CoseError::UnverifiedSignature) => {}
                     Err(e) => {

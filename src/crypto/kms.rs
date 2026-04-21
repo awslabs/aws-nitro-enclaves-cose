@@ -1,20 +1,16 @@
 //! KMS implementation for cryptography
 
-use openssl::{
-    bn::BigNum,
-    ecdsa::EcdsaSig,
-    pkey::{PKey, Public},
-};
-
 use aws_sdk_kms::{
     error::SdkError, primitives::Blob, types::MessageType, types::SigningAlgorithmSpec, Client,
 };
 
 use crate::{
-    crypto::openssl_pkey::ec_curve_to_parameters,
     crypto::{MessageDigest, SignatureAlgorithm, SigningPrivateKey, SigningPublicKey},
     error::CoseError,
 };
+
+#[cfg(any(feature = "openssl", feature = "aws-lc-rs"))]
+use crate::crypto::EcPublicKey;
 
 use tokio::runtime::Handle;
 
@@ -25,7 +21,8 @@ pub struct KmsKey {
 
     sig_alg: SignatureAlgorithm,
 
-    public_key: Option<PKey<Public>>,
+    #[cfg(any(feature = "openssl", feature = "aws-lc-rs"))]
+    public_key: Option<EcPublicKey>,
 }
 
 impl KmsKey {
@@ -46,6 +43,7 @@ impl KmsKey {
             client,
             key_id,
             sig_alg,
+            #[cfg(any(feature = "openssl", feature = "aws-lc-rs"))]
             public_key: None,
         })
     }
@@ -61,11 +59,11 @@ impl KmsKey {
     /// AWS Permissions required on the specified key:
     /// - Sign (for creating new signatures)
     /// - GetPublicKey (to get the public key if it wasn't passed in)
-    #[cfg(feature = "key_openssl_pkey")]
+    #[cfg(any(feature = "openssl", feature = "aws-lc-rs"))]
     pub fn new_with_public_key(
         client: Client,
         key_id: String,
-        public_key: Option<PKey<Public>>,
+        public_key: Option<EcPublicKey>,
     ) -> Result<Self, CoseError> {
         let handle = Handle::current();
         let public_key = match public_key {
@@ -82,25 +80,15 @@ impl KmsKey {
                         CoseError::UnsupportedError("No public key returned".to_string())
                     })?;
 
-                PKey::public_key_from_der(public_key.as_ref())
-                    .map_err(|e| CoseError::SignatureError(Box::new(e)))?
+                EcPublicKey::from_spki(public_key.as_ref())?
             }
         };
 
-        let curve_name = public_key
-            .ec_key()
-            .map_err(|_| CoseError::UnsupportedError("Non-EC keys are not supported".to_string()))?
-            .group()
-            .curve_name()
-            .ok_or_else(|| {
-                CoseError::UnsupportedError("Anonymous EC keys are not supported".to_string())
-            })?;
-        let sig_alg = ec_curve_to_parameters(curve_name)?.0;
+        let sig_alg = public_key.get_parameters()?.0;
 
         Ok(KmsKey {
             client,
             key_id,
-
             sig_alg,
             public_key: Some(public_key),
         })
@@ -114,9 +102,13 @@ impl KmsKey {
         }
     }
 
-    #[cfg(feature = "key_openssl_pkey")]
-    fn verify_with_public_key(&self, data: &[u8], signature: &[u8]) -> Result<bool, CoseError> {
-        self.public_key.as_ref().unwrap().verify(data, signature)
+    // Only use local key verification when the key does not hash internally.
+    // ring-like keys (aws-lc-rs) hash in their verify() call; since sign.rs
+    // pre-computes the digest and passes it here, delegating to such a key
+    // would double-hash and produce an incorrect result.
+    #[cfg(any(feature = "openssl", feature = "aws-lc-rs"))]
+    fn verify_with_public_key(&self, digest: &[u8], signature: &[u8]) -> Result<bool, CoseError> {
+        self.public_key.as_ref().unwrap().verify(digest, signature)
     }
 }
 
@@ -132,7 +124,7 @@ impl SigningPublicKey for KmsKey {
     ///
     /// # Arguments
     ///
-    /// * `data` - A byte slice containing the data to verify
+    /// * `digest` - A byte slice containing the pre-computed digest of the data to verify
     /// * `signature` - A byte slice containing the signature to verify against the data
     ///
     /// # Returns
@@ -140,50 +132,37 @@ impl SigningPublicKey for KmsKey {
     /// * `Ok(true)` - If the signature is valid for the given data
     /// * `Ok(false)` - If the signature is invalid or verification fails gracefully
     /// * `Err(CoseError)` - If an error occurs during verification
-    fn verify(&self, data: &[u8], signature: &[u8]) -> Result<bool, CoseError> {
-        if self.public_key.is_some() {
-            #[cfg(feature = "key_openssl_pkey")]
-            return self.verify_with_public_key(data, signature);
+    fn verify(&self, digest: &[u8], signature: &[u8]) -> Result<bool, CoseError> {
+        #[cfg(any(feature = "openssl", feature = "aws-lc-rs"))]
+        if self.public_key.is_some()
+            && !self.public_key.as_ref().unwrap().hashes_internally()
+        {
+            return self.verify_with_public_key(digest, signature);
+        }
 
-            #[cfg(not(feature = "key_openssl_pkey"))]
-            panic!("Would have been impossible to get public_key set");
-        } else {
-            // Call KMS to verify
+        // Convert COSE raw R||S to DER for KMS
+        let (bytes_r, bytes_s) = signature.split_at(self.sig_alg.key_length());
+        let sig = super::der_util::ecdsa_sig_to_der(bytes_r, bytes_s)?;
 
-            // Recover the R and S factors from the signature contained in the object
-            let (bytes_r, bytes_s) = signature.split_at(self.sig_alg.key_length());
+        let request = self
+            .client
+            .verify()
+            .key_id(self.key_id.clone())
+            .message(Blob::new(digest.to_vec()))
+            .message_type(MessageType::Digest)
+            .signing_algorithm(self.get_sig_alg_spec())
+            .signature(Blob::new(sig))
+            .send();
 
-            let r =
-                BigNum::from_slice(&bytes_r).map_err(|e| CoseError::SignatureError(Box::new(e)))?;
-            let s =
-                BigNum::from_slice(&bytes_s).map_err(|e| CoseError::SignatureError(Box::new(e)))?;
+        let handle = Handle::current();
+        let reply = handle.block_on(request);
 
-            let sig = EcdsaSig::from_private_components(r, s)
-                .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
-            let sig = sig
-                .to_der()
-                .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
-
-            let request = self
-                .client
-                .verify()
-                .key_id(self.key_id.clone())
-                .message(Blob::new(data.to_vec()))
-                .message_type(MessageType::Digest)
-                .signing_algorithm(self.get_sig_alg_spec())
-                .signature(Blob::new(sig))
-                .send();
-
-            let handle = Handle::current();
-            let reply = handle.block_on(request);
-
-            match reply {
-                Ok(v) => Ok(v.signature_valid),
-                Err(SdkError::ServiceError(e)) if e.err().is_kms_invalid_signature_exception() => {
-                    Ok(false)
-                }
-                Err(e) => Err(CoseError::AwsVerifyError(e)),
+        match reply {
+            Ok(v) => Ok(v.signature_valid),
+            Err(SdkError::ServiceError(e)) if e.err().is_kms_invalid_signature_exception() => {
+                Ok(false)
             }
+            Err(e) => Err(CoseError::AwsVerifyError(e)),
         }
     }
 }
@@ -201,12 +180,12 @@ impl SigningPrivateKey for KmsKey {
     ///
     /// * `Ok(Vec<u8>)` - A vector containing the formatted signature bytes
     /// * `Err(CoseError)` - If signing or signature formatting fails
-    fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CoseError> {
+    fn sign(&self, digest: &[u8]) -> Result<Vec<u8>, CoseError> {
         let request = self
             .client
             .sign()
             .key_id(self.key_id.clone())
-            .message(Blob::new(data.to_vec()))
+            .message(Blob::new(digest.to_vec()))
             .message_type(MessageType::Digest)
             .signing_algorithm(self.get_sig_alg_spec())
             .send();
@@ -218,35 +197,9 @@ impl SigningPrivateKey for KmsKey {
             .signature
             .ok_or_else(|| CoseError::UnsupportedError("No signature returned".to_string()))?;
 
-        let signature = EcdsaSig::from_der(signature.as_ref())
-            .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
-
+        // KMS returns DER-encoded ECDSA signature; convert to COSE I2OSP(r,n)||I2OSP(s,n)
+        let (bytes_r, bytes_s) = super::der_util::ecdsa_sig_from_der(signature.as_ref())?;
         let key_length = self.sig_alg.key_length();
-
-        // The spec defines the signature as:
-        // Signature = I2OSP(R, n) | I2OSP(S, n), where n = ceiling(key_length / 8)
-        // The Signer interface doesn't provide this, so this will use EcdsaSig interface instead
-        // and concatenate R and S.
-        // See https://tools.ietf.org/html/rfc8017#section-4.1 for details.
-        let bytes_r = signature.r().to_vec();
-        let bytes_s = signature.s().to_vec();
-
-        // These should *never* exceed ceiling(key_length / 8)
-        assert!(bytes_r.len() <= key_length);
-        assert!(bytes_s.len() <= key_length);
-
-        let mut signature_bytes = vec![0u8; key_length * 2];
-
-        // This is big-endian encoding so padding might be added at the start if the factor is
-        // too short.
-        let offset_copy = key_length - bytes_r.len();
-        signature_bytes[offset_copy..offset_copy + bytes_r.len()].copy_from_slice(&bytes_r);
-
-        // This is big-endian encoding so padding might be added at the start if the factor is
-        // too short.
-        let offset_copy = key_length - bytes_s.len() + key_length;
-        signature_bytes[offset_copy..offset_copy + bytes_s.len()].copy_from_slice(&bytes_s);
-
-        Ok(signature_bytes)
+        Ok(super::der_util::merge_ec_signature(&bytes_r, &bytes_s, key_length))
     }
 }

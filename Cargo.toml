@@ -1,6 +1,6 @@
 [package]
 name = "aws-nitro-enclaves-cose"
-version = "0.5.3"
+version = "0.6.0"
 authors = ["Petre Eftime <epetre@amazon.com>"]
 edition = "2018"
 license = "Apache-2.0"
@@ -16,8 +16,13 @@ serde_repr = "0.1"
 serde_bytes = { version = "0.11", features = ["std"] }
 serde_with = { version = "3.3" }
 openssl = { version = "0.10", optional = true }
+ring = { version = "0.17", optional = true }
+aws-lc-rs = { version = "1", optional = true }
+der = { version = "0.7", default-features = false, features = ["alloc", "std"], optional = true }
+pkcs8 = { version = "0.10", default-features = false, features = ["alloc"], optional = true }
+spki = { version = "0.7", default-features = false, features = ["alloc"], optional = true }
 tss-esapi = { version = "7.5.1", optional = true }
-aws-sdk-kms = { version = "<=1.22", optional = true }
+aws-sdk-kms = { version = "1", optional = true }
 tokio = { version = "1.20", features = ["rt", "macros"], optional = true }
 
 [dependencies.serde]
@@ -26,14 +31,20 @@ features = ["derive"]
 
 [dev-dependencies]
 hex = "0.4"
-aws-config = { version = "<=1.5" }
-aws-sdk-sso = { version = "<= 1.21.0" }
-aws-sdk-ssooidc = { version = "<= 1.21.0" }
-aws-sdk-sts = { version = "<= 1.21.0" }
-aws-smithy-runtime = { version = "<=1.6" }
+sec1 = { version = "0.7", features = ["alloc", "pkcs8"] }
+der = { version = "0.7", default-features = false, features = ["alloc", "std"] }
+pkcs8 = { version = "0.10", default-features = false, features = ["alloc"] }
+spki = { version = "0.7", default-features = false, features = ["alloc"] }
+aws-config = { version = "1" }
+aws-sdk-sso = { version = "1" }
+aws-sdk-ssooidc = { version = "1" }
+aws-sdk-sts = { version = "1" }
 
 [features]
-default = ["key_openssl_pkey"]
-key_openssl_pkey = ["openssl"]
-key_tpm = ["tss-esapi", "openssl"]
-key_kms = ["aws-sdk-kms", "tokio", "key_openssl_pkey"]
+default = ["openssl"]
+openssl = ["dep:openssl"]
+ring = ["dep:ring", "dep:der", "dep:pkcs8", "dep:spki"]
+aws-lc-rs = ["dep:aws-lc-rs", "dep:der", "dep:pkcs8", "dep:spki"]
+pem = ["pkcs8?/pem", "spki?/pem"]
+key_tpm = ["tss-esapi"]
+key_kms = ["aws-sdk-kms", "tokio", "dep:der"]

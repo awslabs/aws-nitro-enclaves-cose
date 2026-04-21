@@ -3,32 +3,42 @@
 use crate::encrypt::CoseAlgorithm;
 use crate::error::CoseError;
 use crate::header_map::HeaderMap;
-#[cfg(feature = "openssl")]
-use ::openssl::symm::Cipher;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::str::FromStr;
+
+pub(crate) mod der_util;
 
 #[cfg(feature = "openssl")]
 mod openssl;
 
+#[cfg(any(feature = "ring", feature = "aws-lc-rs"))]
+mod ring_like;
+
 #[cfg(feature = "openssl")]
-pub use self::openssl::Openssl;
+pub(crate) type ActiveBackend = self::openssl::Openssl;
+
+#[cfg(any(feature = "ring", feature = "aws-lc-rs"))]
+pub(crate) type ActiveBackend = self::ring_like::RingLike;
+
+#[cfg(feature = "openssl")]
+pub use self::openssl::{EcPrivateKey, EcPublicKey};
+
+#[cfg(any(feature = "ring", feature = "aws-lc-rs"))]
+pub use self::ring_like::{EcPrivateKey, EcPublicKey};
 
 #[cfg(feature = "key_kms")]
 pub mod kms;
-#[cfg(feature = "key_openssl_pkey")]
-mod openssl_pkey;
 #[cfg(feature = "key_tpm")]
 pub mod tpm;
 
 /// A trait exposing a source of entropy
-pub trait Entropy {
+pub(crate) trait Entropy {
     /// Fill the provided `buff` with cryptographic random values.
     fn rand_bytes(buff: &mut [u8]) -> Result<(), CoseError>;
 }
 
 /// A trait exposing various aead encryption algorithms.
-pub trait Encryption {
+pub(crate) trait Encryption {
     /// Encryption for AEAD ciphers such as AES GCM.
     ///
     /// Additional Authenticated Data (AEAD) can be provided in the `aad` field, and the authentication tag
@@ -67,19 +77,8 @@ impl From<CoseAlgorithm> for EncryptionAlgorithm {
     }
 }
 
-#[cfg(feature = "openssl")]
-impl From<EncryptionAlgorithm> for Cipher {
-    fn from(algo: EncryptionAlgorithm) -> Cipher {
-        match algo {
-            EncryptionAlgorithm::Aes128Gcm => Cipher::aes_128_gcm(),
-            EncryptionAlgorithm::Aes192Gcm => Cipher::aes_192_gcm(),
-            EncryptionAlgorithm::Aes256Gcm => Cipher::aes_256_gcm(),
-        }
-    }
-}
-
 /// A trait exposing various aead decryption algorithms.
-pub trait Decryption {
+pub(crate) trait Decryption {
     /// Like `decrypt`, but for AEAD ciphers such as AES GCM.
     ///
     /// Additional Authenticated Data can be provided in the `aad` field, and the authentication tag
@@ -117,7 +116,8 @@ impl From<MessageDigest> for ::openssl::hash::MessageDigest {
 }
 
 /// A trait exposing various cryptographic hash algorithms
-pub trait Hash {
+#[allow(dead_code)]
+pub(crate) trait Hash {
     /// Computes the hash of the `data` with provided hash function
     fn hash(digest: MessageDigest, data: &[u8]) -> Result<Vec<u8>, CoseError>;
 }
@@ -128,38 +128,34 @@ pub trait SigningPublicKey {
     /// public key.
     fn get_parameters(&self) -> Result<(SignatureAlgorithm, MessageDigest), CoseError>;
 
-    /// Given a digest and a signature, returns a boolean whether the signature
-    /// was valid.
+    /// Returns true if this backend hashes the input internally.
+    ///
+    /// When true, callers must pass the raw pre-image bytes.  When false (the
+    /// default), callers must pass a pre-computed digest produced by the
+    /// algorithm returned from `get_parameters`.
+    fn hashes_internally(&self) -> bool {
+        false
+    }
+
+    /// Verify `signature` over `digest`.
+    ///
+    /// Unless `hashes_internally()` returns true, `digest` must be a
+    /// pre-computed hash of the data to verify (e.g. the serialised
+    /// `Sig_Structure`), produced with the algorithm from `get_parameters`.
     fn verify(&self, digest: &[u8], signature: &[u8]) -> Result<bool, CoseError>;
-}
-
-#[cfg(feature = "openssl")]
-fn merge_ec_signature(bytes_r: &[u8], bytes_s: &[u8], key_length: usize) -> Vec<u8> {
-    assert!(bytes_r.len() <= key_length);
-    assert!(bytes_s.len() <= key_length);
-
-    let mut signature_bytes = vec![0u8; key_length * 2];
-
-    // This is big-endian encoding so padding might be added at the start if the factor is
-    // too short.
-    let offset_copy = key_length - bytes_r.len();
-    signature_bytes[offset_copy..offset_copy + bytes_r.len()].copy_from_slice(bytes_r);
-
-    // This is big-endian encoding so padding might be added at the start if the factor is
-    // too short.
-    let offset_copy = key_length - bytes_s.len() + key_length;
-    signature_bytes[offset_copy..offset_copy + bytes_s.len()].copy_from_slice(bytes_s);
-
-    signature_bytes
 }
 
 /// A private key that can produce new signatures
 pub trait SigningPrivateKey: SigningPublicKey {
-    /// Given a digest, returns a signature
+    /// Sign `digest`.
+    ///
+    /// Unless `hashes_internally()` returns true, `digest` must be a
+    /// pre-computed hash of the data to sign (e.g. the serialised
+    /// `Sig_Structure`), produced with the algorithm from `get_parameters`.
     fn sign(&self, digest: &[u8]) -> Result<Vec<u8>, CoseError>;
 }
 
-/// Values from https://tools.ietf.org/html/rfc8152#section-8.1
+/// Values from <https://tools.ietf.org/html/rfc8152#section-8.1>
 #[derive(Debug, Copy, Clone, Serialize_repr, Deserialize_repr)]
 #[repr(i8)]
 pub enum SignatureAlgorithm {

@@ -17,11 +17,15 @@ jobs:
         name: Test on rust ${{matrix.rust}}  (keys ${{ matrix.key_feature_set }})
         runs-on: ubuntu-latest
         strategy:
+            fail-fast: true
             matrix:
                 rust: [1.71.1, stable, nightly]
                 key_feature_set:
-                  - key_openssl_pkey
-                  - key_kms
+                  - openssl
+                  - openssl,key_kms
+                  - ring
+                  - aws-lc-rs
+                  - aws-lc-rs,key_kms
         steps:
         - uses: actions/checkout@v4
         - uses: dtolnay/rust-toolchain@master
@@ -59,10 +63,14 @@ jobs:
                   --daemon
         - name: Run tests
           run: |
-              TCTI=swtpm: cargo test --features key_tpm,key_openssl_pkey
+              TCTI=swtpm: cargo test --no-default-features --features key_tpm,openssl
+              TCTI=swtpm: cargo test --no-default-features --features key_tpm,ring
+              TCTI=swtpm: cargo test --no-default-features --features key_tpm,aws-lc-rs
         - name: Run clippy
           run: |
-              cargo clippy --features key_tpm,key_openssl_pkey --all
+              cargo clippy --no-default-features --features key_tpm,openssl --all
+              cargo clippy --no-default-features --features key_tpm,ring --all
+              cargo clippy --no-default-features --features key_tpm,aws-lc-rs --all
 
     clippy:
         name: Clippy
@@ -72,6 +80,8 @@ jobs:
         - uses: dtolnay/rust-toolchain@stable
         - run: rustup component add clippy
         - run: cargo clippy --all
+        - run: cargo clippy --no-default-features --features ring --all
+        - run: cargo clippy --no-default-features --features aws-lc-rs --all
 
     fmt:
         name: Rustfmt

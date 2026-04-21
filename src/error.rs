@@ -18,7 +18,9 @@ pub enum CoseError {
     EntropyError(Box<dyn Error + Send + Sync>),
     /// Computation of a cryptographic hash failed
     HashingError(Box<dyn Error + Send + Sync>),
-    /// Signature could not be performed due to OpenSSL error.
+    /// Key material could not be parsed or constructed.
+    KeyDecodingError(Box<dyn Error + Send + Sync>),
+    /// A signing or verification operation failed.
     SignatureError(Box<dyn Error + Send + Sync>),
     /// This feature is not yet fully implemented according
     /// to the spec.
@@ -34,7 +36,7 @@ pub enum CoseError {
     SerializationError(CborError),
     /// Tag is missing or incorrect.
     TagError(Option<u64>),
-    /// Encryption could not be performed due to OpenSSL error.
+    /// An encryption or decryption operation failed.
     EncryptionError(Box<dyn Error + Send + Sync>),
     /// TPM error occured
     #[cfg(feature = "key_tpm")]
@@ -46,7 +48,7 @@ pub enum CoseError {
     #[cfg(feature = "key_kms")]
     AwsVerifyError(SdkError<VerifyError>),
     /// AWS GetPublicKey error occured
-    #[cfg(all(feature = "key_kms", feature = "key_openssl_pkey"))]
+    #[cfg(feature = "key_kms")]
     AwsGetPublicKeyError(SdkError<GetPublicKeyError>),
 }
 
@@ -55,6 +57,7 @@ impl fmt::Display for CoseError {
         match self {
             CoseError::EntropyError(e) => write!(f, "Entropy error: {}", e),
             CoseError::HashingError(e) => write!(f, "Hashing failed: {}", e),
+            CoseError::KeyDecodingError(e) => write!(f, "Key decoding error: {}", e),
             CoseError::SignatureError(e) => write!(f, "Signature error: {}", e),
             CoseError::UnimplementedError => write!(f, "Not implemented"),
             CoseError::UnsupportedError(e) => write!(f, "Not supported: {}", e),
@@ -70,7 +73,7 @@ impl fmt::Display for CoseError {
             CoseError::AwsSignError(e) => write!(f, "AWS sign error: {}", e),
             #[cfg(feature = "key_kms")]
             CoseError::AwsVerifyError(e) => write!(f, "AWS verify error: {}", e),
-            #[cfg(all(feature = "key_kms", feature = "key_openssl_pkey"))]
+            #[cfg(feature = "key_kms")]
             CoseError::AwsGetPublicKeyError(e) => write!(f, "AWS GetPublicKey error: {}", e),
         }
     }
@@ -79,7 +82,7 @@ impl fmt::Display for CoseError {
 impl Error for CoseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            CoseError::SignatureError(e) => e.source(),
+            CoseError::KeyDecodingError(e) | CoseError::SignatureError(e) => Some(e.as_ref()),
             CoseError::SerializationError(e) => Some(e),
             _ => None,
         }

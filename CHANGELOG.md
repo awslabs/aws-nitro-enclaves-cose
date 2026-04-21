@@ -1,6 +1,30 @@
 
 # Changelog
 
+## 0.6.0
+
+### Breaking changes
+
+* The `key_openssl_pkey` Cargo feature has been renamed to `openssl`. Update your `Cargo.toml` accordingly.
+* `PKey<Private>` / `PKey<Public>` are no longer accepted directly as signing keys. Use the new `EcPrivateKey` / `EcPublicKey` wrappers instead.
+* `CoseSign1` signing/verification methods no longer take `<H: Hash>` or `<C: Encryption + Entropy>` / `<C: Decryption>` type parameters; the active backend is selected at compile time.
+
+### New features
+
+* Two new crypto backends: `ring` and `aws-lc-rs`. Exactly one of `openssl`, `ring`, or `aws-lc-rs` must be selected; the features are mutually exclusive. `openssl` remains the default.
+* `key_tpm` and `key_kms` no longer force the `openssl` feature; they compile with any backend (`ring + key_tpm`, `aws-lc-rs + key_kms`, etc.).
+* `ring + key_kms` is rejected at compile time with a clear error message; use `aws-lc-rs` instead.
+* Crate-owned `EcPrivateKey` / `EcPublicKey` wrappers with a consistent public API across all three backends.
+
+### Limitations of the `ring` backend
+
+* ES512 / P-521 signing and verification is not supported; use `aws-lc-rs` or `openssl`.
+* AES-192-GCM encryption is not supported; use `aws-lc-rs` or `openssl`.
+
+### API notes
+
+* `EcPrivateKey::from_pem` and `EcPublicKey::from_pem` are available on all backends but require the `pem` feature flag.
+
 ## 0.5.3
 * Bumped `aws-sdk-kms` to 1.22
 * Bumped MSRV to 1.71
