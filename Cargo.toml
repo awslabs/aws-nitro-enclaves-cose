@@ -1,23 +1,23 @@
 [package]
 name = "aws-nitro-enclaves-cose"
-version = "0.5.3"
+version = "0.6.0"
 authors = ["Petre Eftime <epetre@amazon.com>"]
-edition = "2018"
+edition = "2021"
 license = "Apache-2.0"
 keywords = ["COSE"]
 categories = ["cryptography"]
 repository = "https://github.com/awslabs/aws-nitro-enclaves-cose"
 description = "This library aims to provide a safe Rust implementation of COSE, with COSE Sign1 currently implemented."
-rust-version = "1.71"
+rust-version = "1.91.1"
 
 [dependencies]
-serde_cbor = { version="0.11", features = ["tags"] }
+ciborium = "0.2"
 serde_repr = "0.1"
 serde_bytes = { version = "0.11", features = ["std"] }
 serde_with = { version = "3.3" }
 openssl = { version = "0.10", optional = true }
 tss-esapi = { version = "7.5.1", optional = true }
-aws-sdk-kms = { version = "<=1.22", optional = true }
+aws-sdk-kms = { version = "1", optional = true }
 tokio = { version = "1.20", features = ["rt", "macros"], optional = true }
 
 [dependencies.serde]
@@ -26,11 +26,11 @@ features = ["derive"]
 
 [dev-dependencies]
 hex = "0.4"
-aws-config = { version = "<=1.5" }
-aws-sdk-sso = { version = "<= 1.21.0" }
-aws-sdk-ssooidc = { version = "<= 1.21.0" }
-aws-sdk-sts = { version = "<= 1.21.0" }
-aws-smithy-runtime = { version = "<=1.6" }
+aws-config = { version = "1" }
+aws-sdk-sso = { version = "1" }
+aws-sdk-ssooidc = { version = "1" }
+aws-sdk-sts = { version = "1" }
+aws-smithy-runtime = { version = "1" }
 
 [features]
 default = ["key_openssl_pkey"]

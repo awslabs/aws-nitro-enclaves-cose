@@ -1,13 +1,13 @@
 //! COSE Signing
 
+use ciborium::tag::Captured;
+use ciborium::value::{Integer, Value as CborValue};
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::ByteBuf;
-use serde_cbor::Error as CborError;
-use serde_cbor::Value as CborValue;
 
 use crate::crypto::{Hash, SigningPrivateKey, SigningPublicKey};
 use crate::error::CoseError;
-use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
+use crate::header_map::{map_to_empty_or_serialized, validate_protected_bytes, HeaderMap};
 
 ///  Implementation of the Sig_structure as defined in
 ///  [RFC8152](https://tools.ietf.org/html/rfc8152#section-4.4).
@@ -72,7 +72,7 @@ pub struct SigStructure(
 impl SigStructure {
     /// Takes the protected field of the COSE_Sign object and a raw slice of bytes as payload and creates a
     /// SigStructure for one signer from it
-    pub fn new_sign1(body_protected: &[u8], payload: &[u8]) -> Result<Self, CborError> {
+    pub fn new_sign1(body_protected: &[u8], payload: &[u8]) -> Result<Self, CoseError> {
         Ok(SigStructure(
             String::from("Signature1"),
             ByteBuf::from(body_protected.to_vec()),
@@ -87,14 +87,14 @@ impl SigStructure {
     pub fn new_sign1_cbor_value(
         body_protected: &[u8],
         payload: &CborValue,
-    ) -> Result<Self, CborError> {
-        Self::new_sign1(body_protected, &serde_cbor::to_vec(payload)?)
+    ) -> Result<Self, CoseError> {
+        Self::new_sign1(body_protected, &crate::cbor::to_vec(payload)?)
     }
 
     /// Serializes the SigStructure to . We don't care about deserialization, since
     /// both sides are supposed to compute the SigStructure and compare.
-    pub fn as_bytes(&self) -> Result<Vec<u8>, CborError> {
-        serde_cbor::to_vec(self)
+    pub fn as_bytes(&self) -> Result<Vec<u8>, CoseError> {
+        crate::cbor::to_vec(self)
     }
 }
 
@@ -164,9 +164,7 @@ impl SigStructure {
 ///   )
 ///
 ///   Note: Currently, the structures are not tagged, since it isn't required by
-///   the spec and the only way to achieve this is to add the token at the
-///   start of the serialized object, since the serde_cbor library doesn't
-///   support custom tags.
+///   the spec. Tagging can be enabled via the `tagged` parameter in `as_bytes`.
 #[derive(Debug, Clone)]
 pub struct CoseSign1 {
     /// protected: empty_or_serialized_map,
@@ -209,19 +207,17 @@ impl<'de> Deserialize<'de> for CoseSign1 {
             type Value = CoseSign1;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a possibly tagged CoseSign1 structure")
+                f.write_str("a CoseSign1 4-element sequence")
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<CoseSign1, A::Error>
             where
                 A: SeqAccess<'de>,
             {
-                // This is the untagged version
                 let protected = match seq.next_element()? {
                     Some(v) => v,
                     None => return Err(A::Error::missing_field("protected")),
                 };
-
                 let unprotected = match seq.next_element()? {
                     Some(v) => v,
                     None => return Err(A::Error::missing_field("unprotected")),
@@ -234,7 +230,6 @@ impl<'de> Deserialize<'de> for CoseSign1 {
                     Some(v) => v,
                     None => return Err(A::Error::missing_field("signature")),
                 };
-
                 Ok(CoseSign1 {
                     protected,
                     unprotected,
@@ -242,17 +237,9 @@ impl<'de> Deserialize<'de> for CoseSign1 {
                     signature,
                 })
             }
-
-            fn visit_newtype_struct<D>(self, deserializer: D) -> Result<CoseSign1, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                // This is the tagged version: we ignore the tag part, and just go into it
-                deserializer.deserialize_seq(CoseSign1Visitor)
-            }
         }
 
-        deserializer.deserialize_any(CoseSign1Visitor)
+        deserializer.deserialize_seq(CoseSign1Visitor)
     }
 }
 
@@ -285,17 +272,13 @@ impl CoseSign1 {
         let (_, digest) = key.get_parameters()?;
 
         // Create the SigStruct to sign
-        let protected_bytes =
-            map_to_empty_or_serialized(protected).map_err(CoseError::SerializationError)?;
+        let protected_bytes = map_to_empty_or_serialized(protected)?;
 
-        let sig_structure = SigStructure::new_sign1(&protected_bytes, payload)
-            .map_err(CoseError::SerializationError)?;
+        let sig_structure = SigStructure::new_sign1(&protected_bytes, payload)?;
 
         let struct_digest = H::hash(
             digest,
-            &sig_structure
-                .as_bytes()
-                .map_err(CoseError::SerializationError)?,
+            &sig_structure.as_bytes()?,
         )
         .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
@@ -312,45 +295,38 @@ impl CoseSign1 {
     /// Serializes the structure for transport / storage. If `tagged` is true, the optional #6.18
     /// tag is added to the output.
     pub fn as_bytes(&self, tagged: bool) -> Result<Vec<u8>, CoseError> {
-        let bytes = if tagged {
-            serde_cbor::to_vec(&serde_cbor::tags::Tagged::new(Some(18), &self))
+        if tagged {
+            crate::cbor::to_vec(&ciborium::tag::Required::<_, 18>(self))
         } else {
-            serde_cbor::to_vec(&self)
-        };
-        bytes.map_err(CoseError::SerializationError)
+            crate::cbor::to_vec(self)
+        }
     }
 
-    /// This function deserializes the structure, but doesn't check the contents for correctness
-    /// at all. Accepts untagged structures or structures with tag 18.
+    /// Deserializes a `CoseSign1` from bytes. Accepts untagged structures or structures tagged
+    /// with 18. Validates that the protected header is a well-formed CBOR map.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, CoseError> {
-        let cosesign1: serde_cbor::tags::Tagged<Self> =
-            serde_cbor::from_slice(bytes).map_err(CoseError::SerializationError)?;
-
-        match cosesign1.tag {
-            None | Some(18) => (),
-            Some(tag) => return Err(CoseError::TagError(Some(tag))),
+        let captured: Captured<CoseSign1> = crate::cbor::from_slice(bytes)?;
+        match captured.0 {
+            None | Some(18) => {
+                validate_protected_bytes(captured.1.protected.as_slice())?;
+                Ok(captured.1)
+            }
+            Some(other) => Err(CoseError::TagError(Some(other))),
         }
-        let protected = cosesign1.value.protected.as_slice();
-        let _: HeaderMap =
-            serde_cbor::from_slice(protected).map_err(CoseError::SerializationError)?;
-        Ok(cosesign1.value)
     }
 
-    /// This function deserializes the structure, but doesn't check the contents for correctness
-    /// at all. Accepts structures with tag 18.
+    /// Deserializes a `CoseSign1` from bytes. Requires tag 18 to be present.
+    /// Validates that the protected header is a well-formed CBOR map.
     pub fn from_bytes_tagged(bytes: &[u8]) -> Result<Self, CoseError> {
-        let cosesign1: serde_cbor::tags::Tagged<Self> =
-            serde_cbor::from_slice(bytes).map_err(CoseError::SerializationError)?;
-
-        match cosesign1.tag {
-            Some(18) => (),
-            other => return Err(CoseError::TagError(other)),
+        let captured: Captured<CoseSign1> = crate::cbor::from_slice(bytes)?;
+        match captured.0 {
+            Some(18) => {
+                validate_protected_bytes(captured.1.protected.as_slice())?;
+                Ok(captured.1)
+            }
+            Some(other) => Err(CoseError::TagError(Some(other))),
+            None => Err(CoseError::TagError(None)),
         }
-
-        let protected = cosesign1.value.protected.as_slice();
-        let _: HeaderMap =
-            serde_cbor::from_slice(protected).map_err(CoseError::SerializationError)?;
-        Ok(cosesign1.value)
     }
 
     /// This checks the signature included in the structure against the given public key and
@@ -373,10 +349,11 @@ impl CoseSign1 {
         // TODO: Currently this only validates the case where the Signature Algorithm is included
         // in the protected headers. To be compatible with other implementations this should be
         // more flexible, as stated in the spec.
-        let protected: HeaderMap =
-            HeaderMap::from_bytes(&self.protected).map_err(CoseError::SerializationError)?;
+        let protected: HeaderMap = HeaderMap::from_bytes(&self.protected)?;
 
-        if let Some(protected_signature_alg_val) = protected.get(&CborValue::Integer(1)) {
+        if let Some(protected_signature_alg_val) =
+            protected.get(&CborValue::Integer(Integer::from(1_i32)))
+        {
             let protected_signature_alg = match protected_signature_alg_val {
                 CborValue::Integer(val) => val,
                 _ => {
@@ -386,7 +363,7 @@ impl CoseSign1 {
                     ))
                 }
             };
-            if protected_signature_alg != &(signature_alg as i8 as i128) {
+            if *protected_signature_alg != Integer::from(signature_alg as i8) {
                 // The key doesn't match the one specified in the HeaderMap, so this fails
                 // signature verification immediately.
                 return Ok(false);
@@ -398,14 +375,11 @@ impl CoseSign1 {
             ));
         }
 
-        let sig_structure = SigStructure::new_sign1(&self.protected, &self.payload)
-            .map_err(CoseError::SerializationError)?;
+        let sig_structure = SigStructure::new_sign1(&self.protected, &self.payload)?;
 
         let struct_digest = H::hash(
             digest,
-            &sig_structure
-                .as_bytes()
-                .map_err(CoseError::SerializationError)?,
+            &sig_structure.as_bytes()?,
         )
         .map_err(|e| CoseError::SignatureError(Box::new(e)))?;
 
@@ -422,8 +396,7 @@ impl CoseSign1 {
         if key.is_some() && !self.verify_signature::<H>(key.unwrap())? {
             return Err(CoseError::UnverifiedSignature);
         }
-        let protected: HeaderMap =
-            HeaderMap::from_bytes(&self.protected).map_err(CoseError::SerializationError)?;
+        let protected: HeaderMap = HeaderMap::from_bytes(&self.protected)?;
         Ok((protected, self.payload.to_vec()))
     }
 
@@ -489,24 +462,24 @@ mod tests {
             // Check that HeaderMaps with duplicate entries emit error
             // {1: 42, 2: 42}
             let test = [0xa2, 0x01, 0x18, 0x2A, 0x02, 0x18, 0x2A];
-            let map: HeaderMap = serde_cbor::from_slice(&test).unwrap();
+            let map: HeaderMap = crate::cbor::from_slice(&test).unwrap();
             assert_eq!(
-                map.get(&CborValue::Integer(1)),
-                Some(&CborValue::Integer(42))
+                map.get(&CborValue::Integer(Integer::from(1_i32))),
+                Some(&CborValue::Integer(Integer::from(42_i32)))
             );
             assert_eq!(
-                map.get(&CborValue::Integer(2)),
-                Some(&CborValue::Integer(42))
+                map.get(&CborValue::Integer(Integer::from(2_i32))),
+                Some(&CborValue::Integer(Integer::from(42_i32)))
             );
 
             // {1: 42, 2: 42, 1: 43}
             let test = [0xa3, 0x01, 0x18, 0x2A, 0x02, 0x18, 0x2A, 0x01, 0x18, 0x2B];
-            let map: Result<HeaderMap, _> = serde_cbor::from_slice(&test);
+            let map: Result<HeaderMap, _> = crate::cbor::from_slice(&test);
             assert!(map.is_err());
 
             // {1: 42, 2: 42, 2: 42}
             let test = [0xa3, 0x01, 0x18, 0x2A, 0x02, 0x18, 0x2A, 0x02, 0x18, 0x2A];
-            let map: Result<HeaderMap, _> = serde_cbor::from_slice(&test);
+            let map: Result<HeaderMap, _> = crate::cbor::from_slice(&test);
             assert!(map.is_err());
         }
 
@@ -811,7 +784,7 @@ mod tests {
         fn cose_sign1_ec256_text() {
             let (ec_private, ec_public) = generate_ec256_test_key();
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
@@ -822,7 +795,7 @@ mod tests {
             );
             assert!(!cose_doc2.get_unprotected().is_empty(),);
             assert_eq!(
-                cose_doc2.get_unprotected().get(&CborValue::Integer(4)),
+                cose_doc2.get_unprotected().get(&CborValue::Integer(Integer::from(4_i32))),
                 Some(&CborValue::Bytes(b"11".to_vec())),
             );
         }
@@ -831,7 +804,7 @@ mod tests {
         fn cose_sign1_ec256_text_tagged() {
             let (ec_private, ec_public) = generate_ec256_test_key();
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
@@ -851,13 +824,13 @@ mod tests {
         fn cose_sign1_ec256_text_tagged_serde() {
             let (ec_private, ec_public) = generate_ec256_test_key();
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
             // Tag 6.18 should be present
             assert_eq!(tagged_bytes[0], 6 << 5 | 18);
-            let cose_doc2: CoseSign1 = serde_cbor::from_slice(&tagged_bytes).unwrap();
+            let cose_doc2 = CoseSign1::from_bytes(&tagged_bytes).unwrap();
 
             assert_eq!(
                 cose_doc1.get_payload::<Openssl>(None).unwrap(),
@@ -871,13 +844,13 @@ mod tests {
 
             let mut protected = HeaderMap::new();
             protected.insert(
-                CborValue::Integer(1),
+                CborValue::Integer(Integer::from(1_i32)),
                 (SignatureAlgorithm::ES256 as i8).into(),
             );
-            protected.insert(CborValue::Integer(15), CborValue::Bytes(b"12".to_vec()));
+            protected.insert(CborValue::Integer(Integer::from(15_i32)), CborValue::Bytes(b"12".to_vec()));
 
             let mut unprotected = HeaderMap::new();
-            unprotected.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            unprotected.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new_with_protected::<Openssl>(
                 TEXT,
@@ -893,11 +866,11 @@ mod tests {
                 .unwrap();
 
             assert_eq!(
-                protected.get(&CborValue::Integer(1)),
-                Some(&CborValue::Integer(-7)),
+                protected.get(&CborValue::Integer(Integer::from(1_i32))),
+                Some(&CborValue::Integer(Integer::from(-7_i32))),
             );
             assert_eq!(
-                protected.get(&CborValue::Integer(15)),
+                protected.get(&CborValue::Integer(Integer::from(15_i32))),
                 Some(&CborValue::Bytes(b"12".to_vec())),
             );
             assert_eq!(payload, TEXT,);
@@ -907,7 +880,7 @@ mod tests {
         fn cose_sign1_ec384_text() {
             let (ec_private, ec_public) = generate_ec384_test_key();
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
@@ -922,7 +895,7 @@ mod tests {
         fn cose_sign1_ec512_text() {
             let (ec_private, ec_public) = generate_ec512_test_key();
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
             let cose_doc2 = CoseSign1::from_bytes(&cose_doc1.as_bytes(false).unwrap()).unwrap();
@@ -952,7 +925,7 @@ mod tests {
             let (ec_private, ec_public) = generate_ec512_test_key();
             let (_, ec_public_other) = generate_ec512_test_key();
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
 
@@ -967,7 +940,7 @@ mod tests {
             let (ec_private, ec_public) = generate_ec512_test_key();
             let (_, ec_public_other) = generate_ec384_test_key();
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
 
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &ec_private).unwrap();
 
@@ -1220,7 +1193,7 @@ mod tests {
             let mut tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
 
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
             let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &mut tpm_key).unwrap();
             let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
@@ -1283,7 +1256,7 @@ mod tests {
             let mut tpm_key = TpmKey::new(tpm_context, prim_key).expect("Error creating TpmKey");
 
             let mut map = HeaderMap::new();
-            map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+            map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
             let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &mut tpm_key).unwrap();
 
             // Mangle the signature
@@ -1332,7 +1305,7 @@ mod tests {
                     KmsKey::new(kms_client, key_id, sig_alg).expect("Error building kms_key");
 
                 let mut map = HeaderMap::new();
-                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
                 let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
@@ -1365,7 +1338,7 @@ mod tests {
                     KmsKey::new(kms_client, key_id, sig_alg).expect("Error building kms_key");
 
                 let mut map = HeaderMap::new();
-                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
                 let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
 
                 // Mangle the signature
@@ -1399,7 +1372,7 @@ mod tests {
                     .expect("Error building kms_key");
 
                 let mut map = HeaderMap::new();
-                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
                 let cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
                 let tagged_bytes = cose_doc1.as_bytes(true).unwrap();
 
@@ -1429,7 +1402,7 @@ mod tests {
                     .expect("Error building kms_key");
 
                 let mut map = HeaderMap::new();
-                map.insert(CborValue::Integer(4), CborValue::Bytes(b"11".to_vec()));
+                map.insert(CborValue::Integer(Integer::from(4_i32)), CborValue::Bytes(b"11".to_vec()));
                 let mut cose_doc1 = CoseSign1::new::<Openssl>(TEXT, &map, &kms_key).unwrap();
 
                 // Mangle the signature
