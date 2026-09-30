@@ -22,12 +22,12 @@ use crate::header_map::{map_to_empty_or_serialized, HeaderMap};
 ///  1.  A text string identifying the context of the signature.  The
 ///      context string is:
 ///
-///         "Signature" for signatures using the COSE_Signature structure.
+///      "Signature" for signatures using the COSE_Signature structure.
 ///
-///         "Signature1" for signatures using the COSE_Sign1 structure.
+///      "Signature1" for signatures using the COSE_Sign1 structure.
 ///
-///         "CounterSignature" for signatures used as counter signature
-///         attributes.
+///      "CounterSignature" for signatures used as counter signature
+///      attributes.
 ///
 ///  2.  The protected attributes from the body structure encoded in a
 ///      bstr type.  If there are no protected attributes, a bstr of
