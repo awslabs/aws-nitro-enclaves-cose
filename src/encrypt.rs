@@ -87,20 +87,20 @@ impl CoseAlgorithm {
 ///  1.  A text string identifying the context of the authenticated data
 ///      structure.  The context string is:
 ///
-///         "Encrypt0" for the content encryption of a COSE_Encrypt0 data
-///         structure.
+///      "Encrypt0" for the content encryption of a COSE_Encrypt0 data
+///      structure.
 ///
-///         "Encrypt" for the first layer of a COSE_Encrypt data structure
-///         (i.e., for content encryption).
+///      "Encrypt" for the first layer of a COSE_Encrypt data structure
+///      (i.e., for content encryption).
 ///
-///         "Enc_Recipient" for a recipient encoding to be placed in an
-///         COSE_Encrypt data structure.
+///      "Enc_Recipient" for a recipient encoding to be placed in an
+///      COSE_Encrypt data structure.
 ///
-///         "Mac_Recipient" for a recipient encoding to be placed in a
-///         MACed message structure.
+///      "Mac_Recipient" for a recipient encoding to be placed in a
+///      MACed message structure.
 ///
-///         "Rec_Recipient" for a recipient encoding to be placed in a
-///         recipient structure.
+///      "Rec_Recipient" for a recipient encoding to be placed in a
+///      recipient structure.
 ///
 ///  2.  The protected attributes from the body structure encoded in a
 ///      bstr type.  If there are no protected attributes, a bstr of

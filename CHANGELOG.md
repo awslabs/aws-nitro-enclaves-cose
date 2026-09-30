@@ -1,6 +1,10 @@
 
 # Changelog
 
+## Unreleased
+* Removed the version cap on `aws-sdk-kms`
+* Bumped MSRV to 1.94.1
+
 ## 0.5.3
 * Bumped `aws-sdk-kms` to 1.22
 * Bumped MSRV to 1.71
