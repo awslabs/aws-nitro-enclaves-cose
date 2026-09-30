@@ -1,13 +1,11 @@
 
 # Changelog
 
-## Unreleased
-* Removed the version cap on `aws-sdk-kms`
-* Bumped MSRV to 1.94.1
-
 ## 0.5.3
-* Bumped `aws-sdk-kms` to 1.22
-* Bumped MSRV to 1.71
+* Removed the version cap on `aws-sdk-kms`. All 1.x releases are accepted.
+* Bumped MSRV to 1.94.1
+* Implemented `Display` for `SignatureAlgorithm`
+* Made `CoseError` thread safe
 * Updated docstrings to mention the need in Tokio runtime for non-local key
 use-cases
 
