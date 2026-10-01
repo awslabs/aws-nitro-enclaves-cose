@@ -3,8 +3,6 @@
 use std::error::Error;
 use std::fmt;
 
-use serde_cbor::Error as CborError;
-
 #[cfg(feature = "key_kms")]
 use aws_sdk_kms::{
     error::SdkError, operation::get_public_key::GetPublicKeyError, operation::sign::SignError,
@@ -31,7 +29,7 @@ pub enum CoseError {
     /// Deserialized structure does not respect the COSE specification.
     SpecificationError(String),
     /// Error while serializing or deserializing structures.
-    SerializationError(CborError),
+    SerializationError(Box<dyn Error + Send + Sync>),
     /// Tag is missing or incorrect.
     TagError(Option<u64>),
     /// Encryption could not be performed due to OpenSSL error.
@@ -80,7 +78,7 @@ impl Error for CoseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             CoseError::SignatureError(e) => e.source(),
-            CoseError::SerializationError(e) => Some(e),
+            CoseError::SerializationError(e) => Some(e.as_ref()),
             _ => None,
         }
     }

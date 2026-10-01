@@ -1,6 +1,15 @@
 
 # Changelog
 
+## 0.6.0
+* Replaced `serde_cbor` with `ciborium`. `HeaderMap` keys and values and
+`CoseError::SerializationError` now use `ciborium` types, re-exported as
+`CborValue` and `CborInteger`.
+* Unprotected header maps are now written in RFC 8949 canonical key order.
+Protected headers, payloads and signatures are unchanged, and documents
+written by 0.5.x still verify.
+* Bumped edition to 2021
+
 ## 0.5.3
 * Removed the version cap on `aws-sdk-kms`. All 1.x releases are accepted.
 * Bumped MSRV to 1.94.1
