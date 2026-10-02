@@ -1,8 +1,8 @@
 [package]
 name = "aws-nitro-enclaves-cose"
-version = "0.5.3"
+version = "0.6.0"
 authors = ["Petre Eftime <epetre@amazon.com>"]
-edition = "2018"
+edition = "2021"
 license = "Apache-2.0"
 keywords = ["COSE"]
 categories = ["cryptography"]
@@ -11,7 +11,7 @@ description = "This library aims to provide a safe Rust implementation of COSE, 
 rust-version = "1.94.1"
 
 [dependencies]
-serde_cbor = { version="0.11", features = ["tags"] }
+ciborium = "0.2"
 serde_repr = "0.1"
 serde_bytes = { version = "0.11", features = ["std"] }
 serde_with = { version = "3.3" }
