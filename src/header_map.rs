@@ -44,13 +44,13 @@ impl HeaderMap {
 
     /// Parses a slice of bytes into a HeaderMap, if possible.
     pub fn from_bytes(header_map: &[u8]) -> Result<Self, CoseError> {
-        crate::cbor::from_slice(header_map)
+        crate::cbor::from_slice_untagged(header_map)
     }
 }
 
 /// Validates that a byte slice deserializes as a well-formed CBOR header map.
 pub(crate) fn validate_protected_bytes(bytes: &[u8]) -> Result<(), CoseError> {
-    crate::cbor::from_slice::<HeaderMap>(bytes).map(|_| ())
+    HeaderMap::from_bytes(bytes).map(|_| ())
 }
 
 pub(crate) fn map_to_empty_or_serialized(map: &HeaderMap) -> Result<Vec<u8>, CoseError> {

@@ -5,9 +5,13 @@
 * Replaced `serde_cbor` with `ciborium`. `HeaderMap` keys and values and
 `CoseError::SerializationError` now use `ciborium` types, re-exported as
 `CborValue` and `CborInteger`.
-* Unprotected header maps are now written in RFC 8949 canonical key order.
-Protected headers, payloads and signatures are unchanged, and documents
-written by 0.5.x still verify.
+* Header maps are now written in RFC 8949 canonical key order. This differs
+from 0.5.x when keys differ in CBOR major type or encoded length, for example
+a negative or multi-byte integer label next to a small positive one.
+Verification and decryption use the protected bytes as received, so documents
+written by 0.5.x still verify and decrypt.
+* `from_bytes` rejects trailing bytes, extra array elements, tags on fields or
+on the protected header map, and non-bstr encodings of bstr fields.
 * Bumped edition to 2021
 
 ## 0.5.3

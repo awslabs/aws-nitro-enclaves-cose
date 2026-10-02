@@ -198,7 +198,7 @@ impl<'de> Deserialize<'de> for CoseSign1 {
     where
         D: Deserializer<'de>,
     {
-        use serde::de::{Error, SeqAccess, Visitor};
+        use serde::de::{Error, IgnoredAny, SeqAccess, Visitor};
         use std::fmt;
 
         struct CoseSign1Visitor;
@@ -214,22 +214,13 @@ impl<'de> Deserialize<'de> for CoseSign1 {
             where
                 A: SeqAccess<'de>,
             {
-                let protected = match seq.next_element()? {
-                    Some(v) => v,
-                    None => return Err(A::Error::missing_field("protected")),
-                };
-                let unprotected = match seq.next_element()? {
-                    Some(v) => v,
-                    None => return Err(A::Error::missing_field("unprotected")),
-                };
-                let payload = match seq.next_element()? {
-                    Some(v) => v,
-                    None => return Err(A::Error::missing_field("payload")),
-                };
-                let signature = match seq.next_element()? {
-                    Some(v) => v,
-                    None => return Err(A::Error::missing_field("signature")),
-                };
+                let protected = crate::cbor::next_untagged(&mut seq, "protected")?;
+                let unprotected = crate::cbor::next_untagged(&mut seq, "unprotected")?;
+                let payload = crate::cbor::next_untagged(&mut seq, "payload")?;
+                let signature = crate::cbor::next_untagged(&mut seq, "signature")?;
+                if seq.next_element::<IgnoredAny>()?.is_some() {
+                    return Err(A::Error::invalid_length(4 + 1, &self));
+                }
                 Ok(CoseSign1 {
                     protected,
                     unprotected,
@@ -424,6 +415,94 @@ mod tests {
         use crate::sign::*;
 
         use super::TEXT;
+
+        // Untagged COSE_Sign1 with protected {1: -7}, empty unprotected,
+        // payload "a", signature "b". Parse-only; the signature is not checked.
+        const SIGN1: &[u8] = &[0x84, 0x43, 0xa1, 0x01, 0x26, 0xa0, 0x41, 0x61, 0x41, 0x62];
+
+        fn is_serialization_or_spec(e: CoseError) -> bool {
+            matches!(
+                e,
+                CoseError::SerializationError(_) | CoseError::SpecificationError(_)
+            )
+        }
+
+        #[test]
+        fn strict_parse_accepts_exact() {
+            CoseSign1::from_bytes(SIGN1).unwrap();
+            let mut tagged = vec![0xd2];
+            tagged.extend_from_slice(SIGN1);
+            CoseSign1::from_bytes_tagged(&tagged).unwrap();
+        }
+
+        #[test]
+        fn strict_parse_indefinite_length_array() {
+            // Indefinite-length encoding of the same 4 fields must parse ...
+            let mut b = vec![0x9f];
+            b.extend_from_slice(&SIGN1[1..]);
+            b.push(0xff);
+            CoseSign1::from_bytes(&b).unwrap();
+            // ... and a 5th element before the break must not.
+            let mut b = vec![0x9f];
+            b.extend_from_slice(&SIGN1[1..]);
+            b.extend_from_slice(&[0x00, 0xff]);
+            assert!(is_serialization_or_spec(
+                CoseSign1::from_bytes(&b).unwrap_err()
+            ));
+        }
+
+        #[test]
+        fn strict_parse_rejects_trailing_bytes() {
+            let mut b = SIGN1.to_vec();
+            b.push(0x00);
+            assert!(is_serialization_or_spec(
+                CoseSign1::from_bytes(&b).unwrap_err()
+            ));
+        }
+
+        #[test]
+        fn strict_parse_rejects_extra_element() {
+            // 5-element array: same fields plus a trailing 0.
+            let mut b = SIGN1.to_vec();
+            b[0] = 0x85;
+            b.push(0x00);
+            let msg = format!("{:?}", CoseSign1::from_bytes(&b).unwrap_err());
+            assert!(msg.contains("invalid length 5"), "{msg}");
+        }
+
+        #[test]
+        fn strict_parse_rejects_trailing_bytes_in_protected() {
+            // protected bstr grows to 4 bytes: {1: -7} followed by a stray 0.
+            let b: &[u8] = &[
+                0x84, 0x44, 0xa1, 0x01, 0x26, 0x00, 0xa0, 0x41, 0x61, 0x41, 0x62,
+            ];
+            assert!(is_serialization_or_spec(
+                CoseSign1::from_bytes(b).unwrap_err()
+            ));
+        }
+
+        #[test]
+        fn strict_parse_rejects_tagged_protected_map() {
+            // protected bstr holds 24({1: -7}): a tag on the header map itself.
+            let b: &[u8] = &[
+                0x84, 0x45, 0xd8, 0x18, 0xa1, 0x01, 0x26, 0xa0, 0x41, 0x61, 0x41, 0x62,
+            ];
+            assert!(is_serialization_or_spec(
+                CoseSign1::from_bytes(b).unwrap_err()
+            ));
+            assert!(HeaderMap::from_bytes(&b[2..7]).is_err());
+        }
+
+        #[test]
+        fn strict_parse_rejects_tagged_field() {
+            // payload wrapped in tag 24 (encoded CBOR data item).
+            let b: &[u8] = &[
+                0x84, 0x43, 0xa1, 0x01, 0x26, 0xa0, 0xd8, 0x18, 0x41, 0x61, 0x41, 0x62,
+            ];
+            assert!(is_serialization_or_spec(
+                CoseSign1::from_bytes(b).unwrap_err()
+            ));
+        }
 
         #[test]
         fn map_serialization() {

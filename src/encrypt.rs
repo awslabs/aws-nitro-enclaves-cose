@@ -208,7 +208,7 @@ impl<'de> Deserialize<'de> for CoseEncrypt0 {
     where
         D: Deserializer<'de>,
     {
-        use serde::de::{Error, SeqAccess, Visitor};
+        use serde::de::{Error, IgnoredAny, SeqAccess, Visitor};
         use std::fmt;
 
         struct CoseEncrypt0Visitor;
@@ -224,18 +224,12 @@ impl<'de> Deserialize<'de> for CoseEncrypt0 {
             where
                 A: SeqAccess<'de>,
             {
-                let protected = match seq.next_element()? {
-                    Some(v) => v,
-                    None => return Err(A::Error::missing_field("protected")),
-                };
-                let unprotected = match seq.next_element()? {
-                    Some(v) => v,
-                    None => return Err(A::Error::missing_field("unprotected")),
-                };
-                let ciphertext = match seq.next_element()? {
-                    Some(v) => v,
-                    None => return Err(A::Error::missing_field("ciphertext")),
-                };
+                let protected = crate::cbor::next_untagged(&mut seq, "protected")?;
+                let unprotected = crate::cbor::next_untagged(&mut seq, "unprotected")?;
+                let ciphertext = crate::cbor::next_untagged(&mut seq, "ciphertext")?;
+                if seq.next_element::<IgnoredAny>()?.is_some() {
+                    return Err(A::Error::invalid_length(3 + 1, &self));
+                }
                 Ok(CoseEncrypt0 {
                     protected,
                     unprotected,
@@ -339,9 +333,9 @@ impl CoseEncrypt0 {
                 CoseError::UnsupportedError("Unsupported encryption algorithm".to_string())
             })?;
 
-        let protected_bytes = map_to_empty_or_serialized(&protected)?;
-
-        let enc_structure = EncStructure::new_encrypt0(&protected_bytes)?;
+        // Enc_structure uses the protected bytes as received: re-encoding the
+        // map may change key order and would not match the encryptor's AAD.
+        let enc_structure = EncStructure::new_encrypt0(&self.protected)?;
 
         let iv = match self
             .unprotected
@@ -400,6 +394,131 @@ impl CoseEncrypt0 {
 mod tests {
     use super::*;
     use crate::crypto::Openssl;
+
+    const KEY: &[u8] = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
+    const PLAINTEXT: &[u8] = b"\x12\x34\x56\x78\x90\x12\x34\x56\x12\x34\x56\x78\x90\x12\x34\x56";
+
+    fn is_serialization_or_spec(e: CoseError) -> bool {
+        matches!(
+            e,
+            CoseError::SerializationError(_) | CoseError::SpecificationError(_)
+        )
+    }
+
+    #[test]
+    fn strict_parse_indefinite_length_array() {
+        let c = CoseEncrypt0::new::<Openssl>(PLAINTEXT, CipherConfiguration::Gcm, KEY).unwrap();
+        let def = c.as_bytes(false).unwrap();
+        assert_eq!(def[0], 0x83);
+        let mut b = vec![0x9f];
+        b.extend_from_slice(&def[1..]);
+        b.push(0xff);
+        CoseEncrypt0::from_bytes(&b).unwrap();
+        let mut b = vec![0x9f];
+        b.extend_from_slice(&def[1..]);
+        b.extend_from_slice(&[0x00, 0xff]);
+        assert!(is_serialization_or_spec(
+            CoseEncrypt0::from_bytes(&b).unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn strict_parse_rejects_trailing_bytes() {
+        let c = CoseEncrypt0::new::<Openssl>(PLAINTEXT, CipherConfiguration::Gcm, KEY).unwrap();
+        let mut b = c.as_bytes(false).unwrap();
+        b.push(0x00);
+        assert!(is_serialization_or_spec(
+            CoseEncrypt0::from_bytes(&b).unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn strict_parse_rejects_extra_element() {
+        let c = CoseEncrypt0::new::<Openssl>(PLAINTEXT, CipherConfiguration::Gcm, KEY).unwrap();
+        let mut b = c.as_bytes(false).unwrap();
+        assert_eq!(b[0], 0x83);
+        b[0] = 0x84;
+        b.push(0x00);
+        let msg = format!("{:?}", CoseEncrypt0::from_bytes(&b).unwrap_err());
+        assert!(msg.contains("invalid length 4"), "{msg}");
+    }
+
+    #[test]
+    fn strict_parse_rejects_trailing_bytes_in_protected() {
+        let mut c = CoseEncrypt0::new::<Openssl>(PLAINTEXT, CipherConfiguration::Gcm, KEY).unwrap();
+        let mut p = c.protected.to_vec();
+        p.push(0x00);
+        c.protected = ByteBuf::from(p);
+        let b = c.as_bytes(false).unwrap();
+        assert!(is_serialization_or_spec(
+            CoseEncrypt0::from_bytes(&b).unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn strict_parse_rejects_tagged_protected_map() {
+        let mut c = CoseEncrypt0::new::<Openssl>(PLAINTEXT, CipherConfiguration::Gcm, KEY).unwrap();
+        // Wrap the protected header map in tag 24 inside the bstr.
+        let mut p = vec![0xd8, 0x18];
+        p.extend_from_slice(&c.protected);
+        c.protected = ByteBuf::from(p);
+        let b = c.as_bytes(false).unwrap();
+        assert!(is_serialization_or_spec(
+            CoseEncrypt0::from_bytes(&b).unwrap_err()
+        ));
+        assert!(c.decrypt::<Openssl>(KEY).is_err());
+    }
+
+    #[test]
+    fn strict_parse_rejects_tagged_field() {
+        let c = CoseEncrypt0::new::<Openssl>(PLAINTEXT, CipherConfiguration::Gcm, KEY).unwrap();
+        let b = c.as_bytes(false).unwrap();
+        // Wrap the protected bstr (element 0) in tag 24.
+        let mut t = vec![b[0], 0xd8, 0x18];
+        t.extend_from_slice(&b[1..]);
+        assert!(is_serialization_or_spec(
+            CoseEncrypt0::from_bytes(&t).unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn decrypt_uses_protected_bytes_as_received() {
+        // Protected map {1: 1, 24: 0, -1: 0} as serde_cbor (0.5.x) wrote it:
+        // keys sorted by major type, then magnitude.
+        let protected_05: Vec<u8> = vec![0xa3, 0x01, 0x01, 0x18, 0x18, 0x00, 0x20, 0x00];
+        // ciborium orders the same map by encoded length (RFC 8949).
+        let reencoded =
+            map_to_empty_or_serialized(&HeaderMap::from_bytes(&protected_05).unwrap()).unwrap();
+        assert_ne!(reencoded, protected_05);
+
+        // Encrypt the way a 0.5.x producer would: the stored bytes are the AAD.
+        let alg = CoseAlgorithm::from_value(1).unwrap();
+        let mut iv = vec![0; alg.iv_len().unwrap()];
+        Openssl::rand_bytes(&mut iv).unwrap();
+        let aad = EncStructure::new_encrypt0(&protected_05)
+            .unwrap()
+            .as_bytes()
+            .unwrap();
+        let mut tag = vec![0; alg.tag_size()];
+        let mut ciphertext =
+            Openssl::encrypt_aead(alg.into(), KEY, Some(&iv[..]), &aad, PLAINTEXT, &mut tag)
+                .unwrap();
+        ciphertext.append(&mut tag);
+        let mut unprotected = HeaderMap::new();
+        unprotected.insert(IV.into(), CborValue::Bytes(iv));
+        let c = CoseEncrypt0 {
+            protected: ByteBuf::from(protected_05),
+            unprotected,
+            ciphertext: ByteBuf::from(ciphertext),
+        };
+
+        let (_, _, dec) = c.decrypt::<Openssl>(KEY).unwrap();
+        assert_eq!(dec, PLAINTEXT);
+        // And through the wire format.
+        let fromb = CoseEncrypt0::from_bytes(&c.as_bytes(true).unwrap()).unwrap();
+        let (_, _, dec) = fromb.decrypt::<Openssl>(KEY).unwrap();
+        assert_eq!(dec, PLAINTEXT);
+    }
 
     #[test]
     fn test_encrypt_decrypt() {
