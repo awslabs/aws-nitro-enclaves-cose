@@ -1,6 +1,15 @@
 
 # Changelog
 
+## 0.6.1
+* `aws-sdk-kms` is now a dependency with `default-features = false` and the
+`default-https-client` and `rt-tokio` features. The KMS client uses hyper 1
+and rustls 0.23. The hyper 0.14 and rustls 0.21 crates are no longer in this
+crate's dependency tree. `aws-sdk-kms` 1.63 or newer is required. Any crate
+in a consumer's graph that enables `aws-smithy-runtime/tls-rustls`, for
+example another `aws-sdk-*` crate with default features, brings the hyper
+0.14 client back into that graph.
+
 ## 0.6.0
 * Replaced `serde_cbor` with `ciborium`. `HeaderMap` keys and values and
 `CoseError::SerializationError` now use `ciborium` types, re-exported as

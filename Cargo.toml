@@ -1,6 +1,6 @@
 [package]
 name = "aws-nitro-enclaves-cose"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["Petre Eftime <epetre@amazon.com>"]
 edition = "2021"
 license = "Apache-2.0"
@@ -17,8 +17,13 @@ serde_bytes = { version = "0.11", features = ["std"] }
 serde_with = { version = "3.3" }
 openssl = { version = "0.10", optional = true }
 tss-esapi = { version = "7.5.1", optional = true }
-aws-sdk-kms = { version = "1", optional = true }
 tokio = { version = "1.20", features = ["rt", "macros"], optional = true }
+
+[dependencies.aws-sdk-kms]
+version = "1.63"
+optional = true
+default-features = false
+features = ["default-https-client", "rt-tokio"]
 
 [dependencies.serde]
 version = "1.0"
